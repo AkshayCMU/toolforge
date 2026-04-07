@@ -98,7 +98,7 @@ human-readable in TTY.
 # CAPABILITY 1: Data Exploration — understand ToolBench's structure,
 # inconsistencies, and build a clean normalized registry.
 
-## F1.1 — Pydantic data models ☐
+## F1.1 — Pydantic data models ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** PROJECT_PLAN §3.1 schema.
