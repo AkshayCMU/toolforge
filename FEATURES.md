@@ -71,7 +71,7 @@ signature is locked early:
 
 ---
 
-## F0.3 — Config + structlog ☐
+## F0.3 — Config + structlog ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `.env` (gitignored, user-provided); `src/toolforge/config.py`.
