@@ -47,7 +47,7 @@ stub `DESIGN.md` with section headers only; first commit.
 
 ---
 
-## F0.2 — CLI scaffold ☐
+## F0.2 — CLI scaffold ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `src/toolforge/cli.py` stub from F0.1.
