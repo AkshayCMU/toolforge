@@ -111,7 +111,74 @@ Key design decision: **10-endpoint cap per tool.** Without the cap, a single lar
 
 Budget split: `500 // 8 = 62`, first 4 categories get +1 remainder. Minimum 3 tools per category enforced (achieved 7+ in practice). Deterministic given `(tools, target_endpoints=500, seed=42)`.
 
-### §2.4 Semantic Typing: Vocab Design & LLM Call Design
+### §2.4 Semantic Typing: Vocab Design (Empirical Basis)
+
+Before writing any F1.5 code, we ran a vocabulary analysis over the filtered subset produced
+by the normalizer and `select_subset` (60 tools, 494 endpoints, seed=42). The analysis
+collected all 1,887 parameters across those endpoints — 949 required, 938 optional — and
+recorded the raw name, normalized family, description, and required/optional status for each.
+
+**What the numbers show.** The 1,887 parameters resolve to 558 distinct raw names, but the
+raw name space is extremely noisy. The same logical concept appears as `accessToken`,
+`access_token`, `accountId`, `account_id`, `userId`, `user_id`, and so on. Normalizing
+camelCase and kebab-case into `_`-separated lowercase families reduces 558 raw names to a
+much smaller set of meaningful clusters. The normalized `access_token` family, for instance,
+collapses `accessToken` and `access_token` into a single family of 24 occurrences. This
+confirms that F1.5's semantic vocabulary must be defined over normalized families, not raw
+strings — matching on raw strings would fragment each concept across multiple entries and
+make cross-tool chaining impossible to express cleanly.
+
+Of the 1,887 parameters, 494 (~26%) are reference-like by the analysis heuristics: their
+normalized name contains a reference token (`id`, `uuid`, `key`, `slug`, `token`, `code`,
+`handle`) or their description contains a phrase such as "identifier", "ID of", or "unique".
+That density — roughly one parameter in four — is high enough to support multi-step chaining
+without artificially engineering the tool graph. Each reference-like parameter is a potential
+consumer endpoint waiting to be paired with a producer that returns the same entity.
+
+**Observed naming patterns and what they imply.** Raw name `id` is the single most common
+parameter (61 occurrences), but it is useless as a vocabulary entry on its own: its
+descriptions range from "Tenant ID to delete" to "User id" to "This is the app ID". A
+semantic type called `id` would be trivially satisfied by any prior tool call that returned
+any identifier, which degrades grounding to near-random. The vocabulary therefore avoids
+generic names and instead uses entity-specific families. The entity stem analysis extracted
+stems by stripping trailing `_id`, `_uuid`, `_key`, and similar suffixes; the stems that
+appear with meaningful frequency and domain coverage include **account** (17 occurrences),
+**user** (11), **hotel** (10), **customer** (9), **client** (9), **venue** (8), and
+**product** (8). Additional stems observed in the chainability candidates and raw examples —
+**operation**, **market**, **conversation**, **channel**, **device**, **project**, **tenant**,
+**property**, **media**, **booking**, **flight**, and **checkout** — are sparser in this
+subset but represent realistic multi-step scenarios and are included in the seed vocabulary
+on that basis. Together these form the `CHAIN_ONLY` type tier: values that are often obtained
+from prior tool calls and are strong candidates for chained value flow.
+
+The analysis also surfaces a second tier of concepts that users can supply directly. The top
+raw parameter names include **page** (37 occurrences, 16 required), **search** (32), and
+**currency** (31), and the reference-like family analysis confirms that **league** (14
+reference-like occurrences) and **team** (13) are often described as IDs ("The id of the
+league", "The id of the team") yet in realistic user conversations a person simply names the
+league or team they care about rather than looking up an opaque identifier first. Similarly,
+**season** (26 occurrences, 10 required), **country_code** (9 reference-like), **date** (12),
+and **email** (present in the raw examples, described as "Email ID of the user") are values
+a user brings to the conversation, not values they retrieve via a prior API call. These form
+the `USER_PROVIDED` tier: values the conversation can plausibly source directly from user
+intent rather than from a prior tool output.
+
+**Two explicit classification decisions.** First, `access_token` is classified as
+`CHAIN_ONLY` — the executor will not accept a manually typed value. The analysis finds 24 occurrences in the normalized family, all 19 of the raw
+`accessToken` occurrences are required, and the descriptions are explicit: "OAuth2 Access
+Token from `getAccessToken` method." OAuth tokens are machine-generated strings that users
+cannot reasonably dictate, so any conversation needing one must include an earlier auth or
+login endpoint. Treating `access_token` as `USER_PROVIDED` would allow the LLM to hallucinate
+token values, breaking grounding at the most security-sensitive parameter type in the corpus.
+
+Second, `league`, `season`, and `team` are kept in `USER_PROVIDED` despite some APIs labelling
+them as identifiers. The data shows that `team` is optional in 14 of its 16 occurrences and
+`league` is optional in 12 of its 21 occurrences. More importantly, in natural speech a user
+says "get me stats for Manchester City in the Premier League" — they are not querying a lookup
+table first. Forcing a mandatory chain step to resolve a team or league name into an ID would
+make the generated conversations feel artificial and would incorrectly inflate chain length
+metrics. The classification honours what users actually do, not what API designers called the
+parameter.
 
 ---
 
