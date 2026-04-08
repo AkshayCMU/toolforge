@@ -35,9 +35,25 @@ Three raw ToolBench files were inspected before writing any normalization code:
 | `Travel/flighthive_explore_the_skies.json` | Confirmed key naming conventions (`required_parameters`, `optional_parameters`), but endpoints still had no parameters. Showed that many ToolBench tools expose list/search endpoints with zero required inputs. |
 | `Transportation/deutsche_bahn.json` | First tool with rich parameters. Revealed concrete inconsistencies: type strings are uppercase (`STRING`, `NUMBER`), `ENUM` used as a type with no enum values in the field, `TIME` as a non-standard type string, defaults that are empty strings or `""`, and descriptions present on all params. This file drove the normalization rules below. |
 
+**Distinct raw type strings found across the 3-category sample (730 tools, 12,599 parameters):**
+
+```
+ARRAY  BINARY  BOOLEAN  CREDENTIALS  DATE (YYYY-MM-DD)  DATEPICKER  ENUM
+FILE  GEOPOINT (latitude, longitude)  JSON  LIST  MAP  NUMBER  OBJECT
+SELECT  STRING  TIME (24-hour HH:MM)  string
+```
+
+18 distinct strings for what are logically 6–7 semantic types. The exotic ones
+(`GEOPOINT (latitude, longitude)`, `DATEPICKER`, `CREDENTIALS`, `DATE (YYYY-MM-DD)`,
+`TIME (24-hour HH:MM)`, `SELECT`, `MAP`) all fall through to `unknown-type-fallback → string`.
+This is not defensive coding — it fired 402 times on real data. Removing it would cause
+roughly 3% of parameters to fail Pydantic validation. Note also the single lowercase
+`string` entry alongside uppercase `STRING`: both exist in the corpus, proving that
+`type-lowercased` is similarly non-optional (fired 11,998 times).
+
 ### §2.2 Normalization Decisions Table
 
-Nine rules, applied in order by the normalizer. Each rule tag is recorded in
+Ten rules, applied in order by the normalizer. Each rule tag is recorded in
 `ParamProvenance.normalization_rules_applied` when it fires.
 
 | # | Rule tag | Trigger | Action | Example from ToolBench |
@@ -46,11 +62,30 @@ Nine rules, applied in order by the normalizer. Each rule tag is recorded in
 | 2 | `unknown-type-fallback` | Lowered type not in `{string, number, integer, boolean, array, object}` | Map to `string`, record original | `TIME` → `string`, `ENUM` → `string` |
 | 3 | `enum-no-values` | Type is `ENUM` but no enum values provided | Type becomes `string`, no enum field | deutsche_bahn `ENUM` params with no values list |
 | 4 | `enum-split-from-default` | `default` field contains comma-separated candidate values | Parse into `enum` tuple, clear default | `default: "RE,S,ICE"` → `enum: ("RE","S","ICE")` |
+| 4b | `complex-default-stringified` | `default` is a dict or list | JSON-serialize to string | Found at runtime: `default: {"areatype": "drivetime", ...}` in geo-search tool |
 | 5 | `empty-default-dropped` | `default` is `""` (empty string) | Set default to `None` | deutsche_bahn empty-string defaults |
 | 6 | `null-default-dropped` | `default` is JSON `null` or Python `None` | Set default to `None` (no-op, but recorded) | Ubiquitous across ToolBench |
 | 7 | `synthesized-description` | Parameter or endpoint has missing/empty description | Synthesize from `"{tool_name} {endpoint_name}"` | Tools with blank `description` fields |
 | 8 | `method-fallback-unknown` | HTTP method not in `{GET,POST,PUT,DELETE,PATCH}` | Map to `UNKNOWN` | Endpoints with missing or non-standard methods |
 | 9 | `schema-empty-ignored` | Endpoint's `schema` field is `""` or `{}` | Set `response_schema = ()`, leave `mock_policy = None` (F1.6 decides later) | deutsche_bahn "Search trips" has `schema: {}` → `response_schema = ()`; "Autocomplete" has a real schema object → parsed into `ResponseField` tuples |
+
+**Rule fire counts — 3-category sample (Financial + Sports + Travel, 730 tools, 12,599 params):**
+
+| Rule tag | Count | Notes |
+|----------|-------|-------|
+| `type-lowercased` | 11,998 | Effectively every parameter; ToolBench is all-caps by convention |
+| `synthesized-description` | 3,990 | ~32% of params lack any description text |
+| `empty-default-dropped` | 3,755 | Empty-string defaults are the norm, not the exception |
+| `schema-empty-ignored` | 3,469 | Majority of endpoints have no machine-readable response schema |
+| `unknown-type-fallback` | 402 | 3.2% of params — GEOPOINT, DATEPICKER, CREDENTIALS, etc. |
+| `enum-split-from-default` | 175 | Useful signal: enum options hidden in the default field |
+| `complex-default-stringified` | 5 | Rule 4b — discovered at runtime, not anticipated in the pre-code spec |
+
+Rule 4b (`complex-default-stringified`) was not in the original 9-rule design. It was added
+after the first full corpus run failed with a Pydantic `ValidationError` because a geo-search
+tool stored a dict as its default value (`{"areatype": "drivetime", "units": "minutes", ...}`).
+The fix was to JSON-serialize complex defaults to strings — consistent with Rule 2's
+philosophy that exotic values are preserved as strings rather than discarded.
 
 ### §2.3 Subset Selection Strategy
 

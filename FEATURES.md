@@ -119,7 +119,7 @@ human-readable in TTY.
 
 ---
 
-## F1.2 — Loader: walk and parse raw ToolBench JSON ☐
+## F1.2 — Loader: walk and parse raw ToolBench JSON ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** path to `../toolbench_raw/data/data/toolenv/tools/`; `src/toolforge/registry/loader.py`.
@@ -143,7 +143,7 @@ Skips `__MACOSX/` junk directories and hidden dirs. Malformed JSON → log warni
 
 ---
 
-## F1.3 — Normalizer: raw dict → Tool/Endpoint/Parameter ☐
+## F1.3 — Normalizer: raw dict → Tool/Endpoint/Parameter ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** raw dicts from `walk_toolbench`; `src/toolforge/registry/normalizer.py`.
