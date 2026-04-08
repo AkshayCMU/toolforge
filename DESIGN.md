@@ -89,6 +89,28 @@ philosophy that exotic values are preserved as strings rather than discarded.
 
 ### §2.3 Subset Selection Strategy
 
+**Result: 60 tools, 500 endpoints across 8 categories (seed=42).**
+
+Pre-filter drops:
+- 910 tools dropped entirely — all their endpoints had zero required AND zero optional parameters (nothing for the executor to bind arguments to)
+- 2,058 individual zero-param endpoints pruned from tools that otherwise survived
+
+Key design decision: **10-endpoint cap per tool.** Without the cap, a single large Sports tool consumed the entire 62-endpoint category budget, leaving only 1 tool for the category. Capping at 10 forces the budget to spread across more tools, achieving ≥7 tools per category.
+
+| Category | Tools selected | Endpoints | Budget |
+|---|---|---|---|
+| Advertising | 9 | 63 | 63 |
+| Business | 7 | 63 | 63 |
+| Communication | 7 | 63 | 63 |
+| Data | 7 | 63 | 63 |
+| Devices | 9 | 62 | 62 |
+| Financial | 7 | 62 | 62 |
+| Sports | 7 | 62 | 62 |
+| Travel | 7 | 62 | 62 |
+| **TOTAL** | **60** | **500** | **500** |
+
+Budget split: `500 // 8 = 62`, first 4 categories get +1 remainder. Minimum 3 tools per category enforced (achieved 7+ in practice). Deterministic given `(tools, target_endpoints=500, seed=42)`.
+
 ### §2.4 Semantic Typing: Vocab Design & LLM Call Design
 
 ---

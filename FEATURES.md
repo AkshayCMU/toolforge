@@ -180,7 +180,7 @@ Saved to `artifacts/normalization_report.json` on every build.
 
 ---
 
-## F1.4 — Subset filter: ~500 endpoints, stratified ☐
+## F1.4 — Subset filter: ~500 endpoints, stratified ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** full normalized tool list from F1.3; `src/toolforge/registry/subset.py`.

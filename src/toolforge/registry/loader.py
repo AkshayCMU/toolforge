@@ -15,7 +15,7 @@ import structlog
 log = structlog.get_logger(__name__)
 
 # Directory names the walker should never descend into.
-_SKIP_DIRS = frozenset({"__MACOSX", ".DS_Store"})
+_SKIP_DIRS = frozenset({"__MACOSX", ".DS_Store", "tools"})
 
 
 def walk_toolbench(
