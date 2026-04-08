@@ -27,7 +27,30 @@ the fix is to pin `mem0ai` more tightly, not restrict the interpreter version.
 
 ### §2.1 ToolBench Inconsistencies Observed (with real examples)
 
+Three raw ToolBench files were inspected before writing any normalization code:
+
+| File | What it revealed |
+|------|-----------------|
+| `Entertainment/trendy_cricket_player.json` | Minimal tool — no params on any endpoint, confirmed top-level `api_list` key as the canonical endpoint container. Established baseline: even trivially simple tools parse correctly. |
+| `Travel/flighthive_explore_the_skies.json` | Confirmed key naming conventions (`required_parameters`, `optional_parameters`), but endpoints still had no parameters. Showed that many ToolBench tools expose list/search endpoints with zero required inputs. |
+| `Transportation/deutsche_bahn.json` | First tool with rich parameters. Revealed concrete inconsistencies: type strings are uppercase (`STRING`, `NUMBER`), `ENUM` used as a type with no enum values in the field, `TIME` as a non-standard type string, defaults that are empty strings or `""`, and descriptions present on all params. This file drove the normalization rules below. |
+
 ### §2.2 Normalization Decisions Table
+
+Nine rules, applied in order by the normalizer. Each rule tag is recorded in
+`ParamProvenance.normalization_rules_applied` when it fires.
+
+| # | Rule tag | Trigger | Action | Example from ToolBench |
+|---|----------|---------|--------|----------------------|
+| 1 | `type-lowercased` | `raw_type_string` is not lowercase | Lowercase the type string | `STRING` → `string`, `NUMBER` → `number` |
+| 2 | `unknown-type-fallback` | Lowered type not in `{string, number, integer, boolean, array, object}` | Map to `string`, record original | `TIME` → `string`, `ENUM` → `string` |
+| 3 | `enum-no-values` | Type is `ENUM` but no enum values provided | Type becomes `string`, no enum field | deutsche_bahn `ENUM` params with no values list |
+| 4 | `enum-split-from-default` | `default` field contains comma-separated candidate values | Parse into `enum` tuple, clear default | `default: "RE,S,ICE"` → `enum: ("RE","S","ICE")` |
+| 5 | `empty-default-dropped` | `default` is `""` (empty string) | Set default to `None` | deutsche_bahn empty-string defaults |
+| 6 | `null-default-dropped` | `default` is JSON `null` or Python `None` | Set default to `None` (no-op, but recorded) | Ubiquitous across ToolBench |
+| 7 | `synthesized-description` | Parameter or endpoint has missing/empty description | Synthesize from `"{tool_name} {endpoint_name}"` | Tools with blank `description` fields |
+| 8 | `method-fallback-unknown` | HTTP method not in `{GET,POST,PUT,DELETE,PATCH}` | Map to `UNKNOWN` | Endpoints with missing or non-standard methods |
+| 9 | `schema-empty-ignored` | Endpoint's `schema` field is `""` or `{}` | Set `response_schema = ()`, leave `mock_policy = None` (F1.6 decides later) | deutsche_bahn "Search trips" has `schema: {}` → `response_schema = ()`; "Autocomplete" has a real schema object → parsed into `ResponseField` tuples |
 
 ### §2.3 Subset Selection Strategy
 
