@@ -285,7 +285,7 @@ first 50 annotations. This is the load-bearing quality check of the whole projec
 
 ---
 
-## F1.7 — `toolforge build` CLI command ☐
+## F1.7 — `toolforge build` CLI command ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** F1.1–F1.6; CLI scaffold from F0.2.
