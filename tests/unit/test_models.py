@@ -54,6 +54,7 @@ def _tool(**kwargs) -> Tool:
         name="Hotels",
         category="Travel",
         description="Hotel booking API",
+        file_stem="hotels",
     )
     defaults.update(kwargs)
     return Tool(**defaults)

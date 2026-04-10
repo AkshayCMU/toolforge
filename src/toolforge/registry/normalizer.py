@@ -279,6 +279,7 @@ def _parse_response_schema(schema: dict, prefix: str = "") -> tuple[ResponseFiel
 def normalize_tool(
     raw: dict,
     category: str,
+    file_stem: str,
     report: NormalizationReport,
 ) -> Tool | None:
     """Normalize one raw tool dict into a ``Tool``, or None to drop.
@@ -316,6 +317,7 @@ def normalize_tool(
         name=tool_name,
         category=category,
         description=description,
+        file_stem=file_stem,
         endpoints=tuple(endpoints),
     )
 
@@ -330,9 +332,9 @@ def normalize_corpus(
     report = NormalizationReport()
     tools: list[Tool] = []
 
-    for category, _file_stem, raw in raw_iter:
+    for category, file_stem, raw in raw_iter:
         report.total_seen += 1
-        tool = normalize_tool(raw, category, report)
+        tool = normalize_tool(raw, category, file_stem, report)
         if tool is not None:
             report.total_kept += 1
             report.per_category_counts[category] = (

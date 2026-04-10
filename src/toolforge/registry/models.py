@@ -111,4 +111,6 @@ class Tool(BaseModel):
     name: str
     category: str
     description: str
+    file_stem: str
+    """Source filename stem (without .json), used for response_examples lookup in F1.6."""
     endpoints: tuple[Endpoint, ...] = ()
