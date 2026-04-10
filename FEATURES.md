@@ -17,7 +17,7 @@
 
 ---
 
-# Phase 0 — Setup (≈1 hour)
+# Phase 0 — Setup
 
 ## F0.1 — Project skeleton ☑
 
@@ -211,7 +211,7 @@ Saved to `artifacts/normalization_report.json` on every build.
 
 ---
 
-## F1.5 — Semantic typing pass (LLM, cached) ☐
+## F1.5 — Semantic typing pass (LLM, cached) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** subset tools from F1.4; seed vocab in `src/toolforge/registry/semantic_vocab.py`;

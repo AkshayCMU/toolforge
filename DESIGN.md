@@ -180,6 +180,14 @@ make the generated conversations feel artificial and would incorrectly inflate c
 metrics. The classification honours what users actually do, not what API designers called the
 parameter.
 
+**Post-corpus corrections (applied after full 500-endpoint run).** Four accepted new types were force-nulled via `NULL_OVERRIDE_TYPES` in the post-processor: `public_key` and `private_key` (static cryptographic config values present in IoT/blockchain APIs — not produced by a prior tool call and dangerous to expose as graph edges), `otp` (one-time passwords arrive out-of-band via SMS/email, not as tool outputs, so graph edges through `otp` would be unreachable in practice), and `ticket` (too generic — the LLM applied it to event tickets, support tickets, and booking confirmations interchangeably, making any CHAINS_TO edge using it semantically meaningless). Three accepted new types were reclassified from CHAIN_ONLY to `USER_PROVIDED`: `country_name` (count=17; users say "United States" directly, not via a lookup API — parallel to `city_name` already in USER_PROVIDED), `company_name` (count=4; users type company names from intent, not from prior API responses), and `city_code` (count=5; analogous to `country_code` which was already classified USER_PROVIDED). These corrections reduce the accepted CHAIN_ONLY new-type set from 40 to 33 effective types, and USER_PROVIDED grows from 19 to 22 seed entries.
+
+**Cache key tradeoff.** The cache key for each LLM call is `(endpoint_id, model, prompt_version)`;
+the parameter list itself is excluded. This avoids cache churn from minor normalisation tweaks,
+but means that if normalization rules change substantially — adding or dropping parameters from
+an endpoint — cached annotations become stale. The mitigation is to bump `prompt_version`
+manually whenever normalization rules change in a way that would affect parameter identity.
+
 ---
 
 ## §3 Tool Graph & Chain Sampler
@@ -187,6 +195,15 @@ parameter.
 ### §3.1 Graph Schema Decisions
 
 ### §3.2 Edge Type Justification
+
+**Graph builder invariant — no self-loop CHAINS_TO edges.**
+During the F1.5 pilot review, `getOrderById` was observed both consuming and producing
+`order_id`: the response field `id` was typed `order_id` (plausible from context) while
+the required parameter `orderId` also maps to `order_id`. This creates a self-loop where
+endpoint A would appear to CHAINS_TO itself. Self-loops are semantically meaningless for
+chaining — an endpoint cannot usefully consume its own output as an input — and including
+them would inflate the CHAINS_TO edge count and distort sampler probabilities.
+**F2.1 must filter `CHAINS_TO` edges where source == target endpoint.**
 
 ### §3.3 Sampler Algorithm & Tradeoffs
 
