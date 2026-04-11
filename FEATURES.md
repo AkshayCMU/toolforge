@@ -512,7 +512,7 @@ output schema.
 
 ---
 
-## F4.2 — Planner agent (structured output) ☐
+## F4.2 — Planner agent (structured output) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** sampled chain, diversity hints (stub for now), persona_seed;
