@@ -492,7 +492,7 @@ Types like `city_name`, `date`, `search_query` are never rejected.
 
 # Phase 4 — Multi-Agent Generator (≈3 hours)
 
-## F4.1 — LLM client wrapper with cache ☐
+## F4.1 — LLM client wrapper with cache ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `anthropic` SDK; `src/toolforge/agents/base.py`, `src/toolforge/agents/llm_client.py`.
