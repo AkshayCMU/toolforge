@@ -561,7 +561,7 @@ Model: `claude-haiku-4-5-20251001`. Temperature: 0.7.
 
 ---
 
-## F4.4 — Assistant agent (structured tool-call output) ☐
+## F4.4 — Assistant agent (structured tool-call output) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** conv history, `SessionState`, filtered endpoint list (sampled chain + 3
