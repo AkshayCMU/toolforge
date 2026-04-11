@@ -44,22 +44,20 @@ _CREATION_VERBS: frozenset[str] = frozenset({
 def _is_creation_endpoint(name: str) -> bool:
     """Return True if the endpoint name suggests it creates a new entity.
 
-    Heuristic: the first camelCase word (or snake_case word) is a creation verb.
+    Heuristic: any creation verb appears as a substring of the lowercased name.
+    This handles camelCase, PascalCase, snake_case, and ALL_CAPS uniformly.
 
     Examples:
-      createBooking → 'create' → True
-      bookHotel     → 'book'   → True
-      searchHotels  → 'search' → False
-      getBooking    → 'get'    → False
+      createBooking  → 'create' in 'createbooking' → True
+      CreateBooking  → 'create' in 'createbooking' → True
+      BOOK_HOTEL     → 'book'   in 'book_hotel'    → True
+      CREATE_BOOKING → 'create' in 'create_booking'→ True
+      searchHotels   → no verb  in 'searchhotels'  → False
     """
     if not name:
         return False
-    if "_" in name:
-        first_word = name.split("_")[0].lower()
-    else:
-        parts = re.split(r"(?=[A-Z])", name)
-        first_word = (parts[0] if parts else name).lower()
-    return first_word in _CREATION_VERBS
+    name_lower = name.lower()
+    return any(verb in name_lower for verb in _CREATION_VERBS)
 
 
 # ---------------------------------------------------------------------------

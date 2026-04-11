@@ -255,7 +255,7 @@ first 50 annotations. This is the load-bearing quality check of the whole projec
 
 ---
 
-## F1.6 — Response schema inference (cached) ☐
+## F1.6 — Response schema inference (cached) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** subset tools (with semantic types); `response_examples/` dir under raw data;
@@ -311,7 +311,7 @@ first 50 annotations. This is the load-bearing quality check of the whole projec
 # CAPABILITY 2: Knowledge Graph — capture semantic relationships between
 # tools/endpoints and sample realistic multi-step chains.
 
-## F2.1 — Build the networkx graph from the registry ☐
+## F2.1 — Build the networkx graph from the registry ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `artifacts/registry.json`, `artifacts/chain_only_types.json`;
@@ -348,7 +348,7 @@ first 50 annotations. This is the load-bearing quality check of the whole projec
 
 ---
 
-## F2.2 — Chain sampler (deterministic + constraint interface) ☐
+## F2.2 — Chain sampler (deterministic + constraint interface) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** graph from F2.1; `src/toolforge/graph/sampler.py`.
@@ -395,7 +395,7 @@ are stubs raising `NotImplementedError` (cut per PROJECT_PLAN §12 if behind).
 
 # Phase 3 — Offline Execution (≈1.5 hours)
 
-## F3.1 — SessionState dataclass + executor scaffold ☐
+## F3.1 — SessionState dataclass + executor scaffold ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** PROJECT_PLAN §6.3; `src/toolforge/execution/session.py`.
@@ -419,13 +419,13 @@ body raising `NotImplementedError`.
 - `ToolOutput` is JSON-serializable.
 **Principles:** P3 (this IS the centerpiece of P3 — entire grounding story rests here).
 **Done when:**
-- [ ] `SessionState` and `ToolOutput` exist with all fields.
-- [ ] Unit test: state updates correctly when manually appended.
-- [ ] Commit: `feat(execution): session state scaffold`.
+- [x] `SessionState` and `ToolOutput` exist with all fields.
+- [x] Unit test: state updates correctly when manually appended.
+- [x] Commit: `feat(execution): session state scaffold`.
 
 ---
 
-## F3.2 — Mock responder: static + schema-derived + LLM tiers ☐
+## F3.2 — Mock responder: static + schema-derived + LLM tiers ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `SessionState`, `Endpoint` with `response_schema` and `mock_policy`;
@@ -445,14 +445,14 @@ body raising `NotImplementedError`.
 - LLM tier is the last resort — build report logs the tier distribution.
 **Principles:** P2 (prefer deterministic; LLM is explicit fallback), P3 (registering produced values enables grounding).
 **Done when:**
-- [ ] All three tiers implemented; build report shows the split.
-- [ ] Unit test: same input twice → same output.
-- [ ] Unit test: produced semantic-typed values land in `state.available_values_by_type`.
-- [ ] Commit: `feat(execution): three-tier mock responder`.
+- [x] All three tiers implemented; build report shows the split.
+- [x] Unit test: same input twice → same output.
+- [x] Unit test: produced semantic-typed values land in `state.available_values_by_type`.
+- [x] Commit: `feat(execution): three-tier mock responder`.
 
 ---
 
-## F3.3 — Executor: grounding check + full contract ☐
+## F3.3 — Executor: grounding check + full contract ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** F3.1 scaffold, F3.2 responder, `chain_only_types.json`;
@@ -482,11 +482,11 @@ Types like `city_name`, `date`, `search_query` are never rejected.
 - `CHAIN_ONLY_TYPES` too loose → hallucination slips through (integration test catches).
 **Principles:** P3 (layer 3 of the grounding invariant — without this, P3 is just a wish), P2 (deterministic Python, no LLM in hot path), P4 (structural vs grounding errors are distinguishable → enables targeted repair).
 **Done when:**
-- [ ] Hallucinated `hotel_id` in step 2 → structured error listing valid IDs.
-- [ ] First call with valid user-provided params → success.
-- [ ] 3-step sequence updates state correctly end-to-end.
-- [ ] Unit tests: structural failure path, grounding failure path, success path.
-- [ ] Commit: `feat(execution): executor with grounding invariant`.
+- [x] Hallucinated `hotel_id` in step 2 → structured error listing valid IDs.
+- [x] First call with valid user-provided params → success.
+- [x] 3-step sequence updates state correctly end-to-end.
+- [x] Unit tests: structural failure path, grounding failure path, success path.
+- [x] Commit: `feat(execution): executor with grounding invariant`.
 
 ---
 

@@ -4,13 +4,15 @@ execute() is the hot path: pure Python, no LLM calls.
 
 Five-step contract:
   1. Endpoint lookup — unknown endpoint_id → structured error
-  2. Structural validation — required params present
+  2. Structural validation — required params present (absent OR None → missing)
   3. Semantic grounding check — CHAIN_ONLY args must exist in session pool
   4. Generate mock response via MockResponder
   5. Build ToolOutput, append to state, return
 
-On any error (steps 1–3): returns a ToolOutput with error set and does NOT
-append to state.tool_outputs. The failed call is not part of the session log.
+ALL calls (success and failure) are appended to state.tool_outputs.
+Error outputs have response=None, error=<message>. The timestamp is set to
+"turn-{len(state.tool_outputs)}" BEFORE appending, so every call — including
+failures — advances the turn index monotonically.
 
 Grounding invariant (P3 layer 3):
   Every argument whose Parameter.semantic_type is in chain_only_types must
@@ -64,8 +66,8 @@ class Executor:
     ) -> ToolOutput:
         """Execute a tool call and return a ToolOutput.
 
-        Errors return a ToolOutput without appending to state; the caller
-        can log or repair the failed call. Successes are always appended.
+        ALL outcomes (success and failure) are appended to state.tool_outputs.
+        Error outputs carry response=None and error=<message>.
         """
         # Step 1: Endpoint lookup.
         endpoint = self._registry.get(endpoint_id)
@@ -76,9 +78,11 @@ class Executor:
                 f"Unknown endpoint: {endpoint_id!r}. Known (sample): {sample}",
             )
 
-        # Step 2: Structural validation — all required params present.
+        # Step 2: Structural validation — all required params present and non-None.
         for param in endpoint.parameters:
-            if param.required and param.name not in arguments:
+            if param.required and (
+                param.name not in arguments or arguments.get(param.name) is None
+            ):
                 return self._error(
                     endpoint_id, arguments, state,
                     f"Missing required parameter: {param.name!r}",
@@ -129,13 +133,19 @@ class Executor:
         state: SessionState,
         message: str,
     ) -> ToolOutput:
-        """Build an error ToolOutput. Does NOT append to state."""
+        """Build an error ToolOutput and append it to state.tool_outputs.
+
+        Timestamp is computed from len(state.tool_outputs) BEFORE appending
+        so failed calls advance the turn index just like successful ones.
+        """
         timestamp = f"turn-{len(state.tool_outputs)}"
-        log.debug("executor.error", endpoint_id=endpoint_id, error=message)
-        return ToolOutput(
+        output = ToolOutput(
             endpoint_id=endpoint_id,
             arguments=arguments,
             response=None,
             error=message,
             timestamp=timestamp,
         )
+        state.tool_outputs.append(output)
+        log.debug("executor.error", endpoint_id=endpoint_id, error=message, turn=timestamp)
+        return output

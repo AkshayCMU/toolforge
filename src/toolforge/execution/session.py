@@ -9,6 +9,7 @@ Design notes:
   via session_to_dict(), NOT inside ToolOutput.to_dict().
 - ToolOutput.timestamp is deterministic ("turn-N") in Phase 3.
   Set to len(state.tool_outputs) BEFORE appending the output.
+  This applies to BOTH success and failure outputs — all calls are recorded.
 """
 
 from __future__ import annotations
@@ -86,7 +87,13 @@ class SessionState:
     """Bookings, orders, and other transactional entities created in this session."""
 
     tool_outputs: list[ToolOutput]
-    """Ordered log of every tool call in the conversation (success and failure)."""
+    """Ordered log of ALL tool calls in the conversation — success and failure alike.
+
+    Both successful calls (response set, error=None) and failed calls
+    (response=None, error set) are appended by the Executor. Timestamps are
+    deterministic: "turn-N" where N = len(tool_outputs) BEFORE the append,
+    so failures advance the turn index exactly like successes.
+    """
 
     private_user_knowledge: dict[str, Any]
     """Fields the planner omitted from the initial query; revealed on request."""

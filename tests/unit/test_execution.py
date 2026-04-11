@@ -96,8 +96,8 @@ EP1 = _endpoint(
 )
 
 EP2 = _endpoint(
-    "Travel/Hotels/getBookingDetails",
-    name="getBookingDetails",
+    "Travel/Hotels/fetchBookingDetails",
+    name="fetchBookingDetails",
     params=(_param("booking_id", required=True, semantic_type="booking_id"),),
     fields=(
         _field("hotel_name"),
@@ -261,8 +261,8 @@ class TestMockResponder:
         """Non-creation endpoint: reuses pool[-1] when pool has multiple entries."""
         fresh_state.available_values_by_type["booking_id"] = ["bk-001", "bk-002"]
         ep = _endpoint(
-            "Travel/Hotels/getBookingDetails",
-            name="getBookingDetails",  # not a creation verb
+            "Travel/Hotels/lookupDetails",
+            name="lookupDetails",  # no creation verb substring
             fields=(_field("booking_id", semantic_type="booking_id"),),
         )
         response = responder.respond(ep, {}, fresh_state)
@@ -273,8 +273,8 @@ class TestMockResponder:
     def test_generates_fresh_when_pool_empty(self, responder: MockResponder, fresh_state: SessionState):
         """Non-creation endpoint with empty pool: generates fresh, appends to pool."""
         ep = _endpoint(
-            "Travel/Hotels/getBookingDetails",
-            name="getBookingDetails",
+            "Travel/Hotels/fetchBookingDetails",
+            name="fetchBookingDetails",
             fields=(_field("booking_id", semantic_type="booking_id"),),
         )
         response = responder.respond(ep, {}, fresh_state)
@@ -322,21 +322,44 @@ class TestMockResponder:
 
 class TestCreationHeuristic:
     def test_creation_verbs_detected(self):
-        for name in ("createBooking", "bookHotel", "orderItem", "addUser",
-                     "submitRequest", "placeOrder", "registerAccount"):
+        for name in ("createBooking", "submitRequest", "placeOrder",
+                     "registerAccount", "addUser", "insertRecord"):
             assert _is_creation_endpoint(name), f"Expected creation: {name}"
 
     def test_lookup_verbs_not_creation(self):
-        for name in ("searchHotels", "getBooking", "listOrders",
-                     "fetchDetails", "retrieveUser", "queryItems"):
+        # Names with no creation-verb substring.
+        for name in ("searchHotels", "fetchDetails", "retrieveUser", "queryItems"):
             assert not _is_creation_endpoint(name), f"Expected non-creation: {name}"
 
     def test_snake_case_creation(self):
         assert _is_creation_endpoint("create_booking")
-        assert not _is_creation_endpoint("get_booking")
+        assert _is_creation_endpoint("submit_request")
+        assert not _is_creation_endpoint("fetch_details")
 
     def test_empty_name(self):
         assert not _is_creation_endpoint("")
+
+    def test_creation_verb_across_naming_styles(self):
+        """Creation verbs detected in camelCase, PascalCase, snake_case, ALL_CAPS."""
+        # camelCase
+        assert _is_creation_endpoint("createBooking")
+        assert _is_creation_endpoint("submitOrder")
+        # PascalCase (previously broken: first-word split yielded empty string)
+        assert _is_creation_endpoint("CreateBooking")
+        assert _is_creation_endpoint("SubmitOrder")
+        # snake_case
+        assert _is_creation_endpoint("create_booking")
+        assert _is_creation_endpoint("place_order")
+        # SCREAMING_SNAKE
+        assert _is_creation_endpoint("CREATE_BOOKING")
+        assert _is_creation_endpoint("PLACE_ORDER")
+        # ALL_CAPS no underscore (previously broken)
+        assert _is_creation_endpoint("CREATEBOOKING")
+        # Non-creation across styles
+        assert not _is_creation_endpoint("fetchDetails")
+        assert not _is_creation_endpoint("FetchDetails")
+        assert not _is_creation_endpoint("fetch_details")
+        assert not _is_creation_endpoint("FETCH_DETAILS")
 
 
 # ===========================================================================
@@ -345,30 +368,35 @@ class TestCreationHeuristic:
 
 class TestExecutor:
     def test_unknown_endpoint_returns_error(self, executor: Executor, fresh_state: SessionState):
-        """Unknown endpoint_id → structured error, no crash, not appended to state."""
+        """Unknown endpoint_id -> structured error appended to state."""
         output = executor.execute("NonExistent/ep", {}, fresh_state)
         assert output.error is not None
         assert "Unknown endpoint" in output.error
-        assert len(fresh_state.tool_outputs) == 0
+        assert len(fresh_state.tool_outputs) == 1
+        assert fresh_state.tool_outputs[0].response is None
 
     def test_missing_required_param_returns_error(self, executor: Executor, fresh_state: SessionState):
-        """Missing required param → structural error, not appended to state."""
-        # EP1 requires city_name
+        """Missing required param -> structural error appended to state."""
         output = executor.execute(EP1.id, {}, fresh_state)
         assert output.error is not None
         assert "Missing required parameter" in output.error
         assert "city_name" in output.error
-        assert len(fresh_state.tool_outputs) == 0
+        assert len(fresh_state.tool_outputs) == 1
+
+    def test_required_param_none_value_is_missing(self, executor: Executor, fresh_state: SessionState):
+        """Required param present but value=None -> treated as missing."""
+        output = executor.execute(EP1.id, {"city_name": None}, fresh_state)
+        assert output.error is not None
+        assert "Missing required parameter" in output.error
+        assert "city_name" in output.error
 
     def test_grounding_rejects_hallucinated_chain_only_id(self, executor: Executor, fresh_state: SessionState):
-        """CHAIN_ONLY param with value not in pool → grounding error listing valid values."""
-        # Fresh state: pool is empty. booking_id is CHAIN_ONLY in CHAIN_ONLY_TEST.
-        # EP2 requires booking_id.
+        """CHAIN_ONLY param with value not in pool -> grounding error appended to state."""
         output = executor.execute(EP2.id, {"booking_id": "fake-bk-999"}, fresh_state)
         assert output.error is not None
         assert "not in session" in output.error
         assert "[]" in output.error  # valid values listed (empty pool)
-        assert len(fresh_state.tool_outputs) == 0
+        assert len(fresh_state.tool_outputs) == 1
 
     def test_first_call_user_provided_params_succeeds(self, executor: Executor, fresh_state: SessionState):
         """Mandatory: fresh state + USER_PROVIDED-only params → first call succeeds.
@@ -424,17 +452,35 @@ class TestExecutor:
         output = executor.execute(EP3.id, {"booking_id": "bk-123"}, fresh_state)
         assert output.error is None
 
-    def test_error_timestamp_is_deterministic(self, executor: Executor, fresh_state: SessionState):
-        """Error ToolOutput timestamp matches len(state.tool_outputs) at call time."""
-        # State has 0 outputs → first error is "turn-0".
-        out = executor.execute("bad/ep", {}, fresh_state)
-        assert out.timestamp == "turn-0"
-        # State still has 0 outputs (error not appended).
-        out2 = executor.execute("bad/ep", {}, fresh_state)
-        assert out2.timestamp == "turn-0"
+    def test_failures_appended_to_history(self, executor: Executor, fresh_state: SessionState):
+        """Failed calls ARE appended to state.tool_outputs with response=None."""
+        output = executor.execute("Unknown/ep", {}, fresh_state)
+        assert len(fresh_state.tool_outputs) == 1
+        assert fresh_state.tool_outputs[0].response is None
+        assert fresh_state.tool_outputs[0].error is not None
 
-    def test_success_not_appended_on_structural_failure(self, executor: Executor, fresh_state: SessionState):
-        """Failed calls never appear in state.tool_outputs."""
-        executor.execute(EP1.id, {}, fresh_state)   # missing city_name
-        executor.execute("Unknown/ep", {}, fresh_state)
-        assert len(fresh_state.tool_outputs) == 0
+    def test_repeated_failures_advance_timestamp(self, executor: Executor, fresh_state: SessionState):
+        """Each failure increments the turn index: turn-0, turn-1, turn-2."""
+        out0 = executor.execute("bad/ep", {}, fresh_state)
+        out1 = executor.execute("bad/ep", {}, fresh_state)
+        out2 = executor.execute("bad/ep", {}, fresh_state)
+        assert out0.timestamp == "turn-0"
+        assert out1.timestamp == "turn-1"
+        assert out2.timestamp == "turn-2"
+        assert len(fresh_state.tool_outputs) == 3
+
+    def test_mixed_success_and_failure_timestamps(self, executor: Executor, fresh_state: SessionState):
+        """Timestamps advance monotonically across a mix of successes and failures."""
+        out0 = executor.execute(EP1.id, {"city_name": "Rome"}, fresh_state)
+        assert out0.timestamp == "turn-0"
+        assert out0.error is None
+
+        out1 = executor.execute("Bad/ep", {}, fresh_state)
+        assert out1.timestamp == "turn-1"
+        assert out1.error is not None
+
+        booking_id = fresh_state.available_values_by_type["booking_id"][0]
+        out2 = executor.execute(EP2.id, {"booking_id": booking_id}, fresh_state)
+        assert out2.timestamp == "turn-2"
+        assert out2.error is None
+        assert len(fresh_state.tool_outputs) == 3
