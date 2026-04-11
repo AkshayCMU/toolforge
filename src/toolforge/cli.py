@@ -64,6 +64,11 @@ def build(
 
     save_artifacts(result, settings.artifacts_dir)
 
+    typer.echo("\nBuilding tool graph...")
+    from toolforge.graph.build import build_graph, save_graph
+    graph = build_graph(result.tools, result.chain_only_types)
+    save_graph(graph, settings.artifacts_dir)
+
     typer.echo("\nBuild complete. Artifacts written to:")
     for name in (
         "registry.json",
@@ -72,6 +77,8 @@ def build(
         "semantic_types.json",
         "chain_only_types.json",
         "build_report.md",
+        "graph.pkl",
+        "graph_report.json",
     ):
         typer.echo(f"  {settings.artifacts_dir / name}")
 
