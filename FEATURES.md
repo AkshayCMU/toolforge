@@ -541,7 +541,7 @@ Model: `claude-haiku-4-5-20251001`. Temperature: 0.7.
 
 ---
 
-## F4.3 — User simulator agent ☐
+## F4.3 — User simulator agent ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `TaskPlan` (with `private_user_knowledge`), conv history;
