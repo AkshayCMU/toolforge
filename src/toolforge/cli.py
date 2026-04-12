@@ -100,8 +100,44 @@ def generate(
     ),
 ) -> None:
     """Generate a dataset of synthetic tool-use conversations."""
-    typer.echo("not implemented")
-    raise typer.Exit(0)
+    import json as _json
+
+    from toolforge.generator.loop import generate_batch
+
+    configure_logging()
+    settings = get_settings()
+
+    # Cost guardrail: require explicit confirmation for large runs.
+    if n > 10:
+        typer.echo(
+            f"Warning: generating {n} conversations will make ~{n * 17} LLM calls "
+            "(estimate; varies with cache hit rate)."
+        )
+        confirmed = typer.confirm(f"Proceed with n={n}?", default=False)
+        if not confirmed:
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    was_steered = not no_cross_conversation_steering
+    typer.echo(
+        f"Generating {n} conversations (seed={seed}, steering={'on' if was_steered else 'off'}) → {out}"
+    )
+
+    records = generate_batch(
+        n=n,
+        seed=seed,
+        artifacts_dir=settings.artifacts_dir,
+        cache_dir=settings.cache_dir,
+        was_steered=was_steered,
+    )
+
+    with out.open("w", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(_json.dumps(record, ensure_ascii=False) + "\n")
+
+    typer.echo(f"Done. Wrote {len(records)} conversations to {out}.")
 
 
 @app.command()

@@ -107,3 +107,4 @@ class Conversation(BaseModel):
     session_summary: dict[str, Any]     # from execution.session.session_to_dict()
     judge_result: JudgeResult | None
     status: str                         # "done" | "failed"
+    repair_attempts: int = 0            # number of repair cycles applied (F5.2 / F7.1)

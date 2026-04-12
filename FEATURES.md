@@ -815,7 +815,7 @@ for the diversity experiment to produce meaningful numbers.
 
 # Phase 7 — Batch Generation + Evaluation (≈2 hours)
 
-## F7.1 — `toolforge generate` batch loop ☐
+## F7.1 — `toolforge generate` batch loop ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** F4.6 single-conv generator, F6.1 tracker, F6.2 memory (optional);
@@ -850,10 +850,10 @@ producing JSONL. Each record includes:
 - Length mix: 30/40/30 short/medium/long.
 **Principles:** all five, integrated.
 **Done when:**
-- [ ] `toolforge generate --n 5 --seed 42` → 5 valid records.
-- [ ] `toolforge generate --n 5 --seed 42 --no-cross-conversation-steering` → 5 records with `was_steered=false`.
-- [ ] Hard-requirement checks verified on 20-conversation sample.
-- [ ] Commit: `feat(cli): toolforge generate batch loop`.
+- [x] `toolforge generate --n 5 --seed 42` → 5 valid records.
+- [x] `toolforge generate --n 5 --seed 42 --no-cross-conversation-steering` → 5 records with `was_steered=false`.
+- [x] Hard-requirement checks verified on 20-conversation sample.
+- [x] Commit: `feat(cli): toolforge generate batch loop`.
 
 ---
 
