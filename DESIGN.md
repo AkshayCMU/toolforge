@@ -412,6 +412,31 @@ same logical invariants as the union without the reliability penalty.
 This is a deliberate P2 / P4 tradeoff: a slightly less expressive type signature in
 exchange for a more reliable LLM-facing schema.
 
+### §5.5 `executor → assistant_turn` Routing Deviation
+
+FEATURES.md §F4.6 specifies `executor → user_turn` after a tool call completes.
+The implementation routes `executor → assistant_turn` instead, for two reasons:
+
+1. **Message format consistency.** Tool results are serialised as `{"role": "user",
+   "content": "[tool_result: ...]"}` (matching the judge anchor format in
+   `tests/unit/test_judge.py`). Routing to `user_turn` after the executor appends
+   this role="user" message would invoke the UserSimulator on a conversation whose
+   last message is already role="user", producing two consecutive user-role messages.
+   This breaks the alternating turn structure the assistant prompt expects.
+
+2. **Prompt contract.** `prompts/assistant.md` says: *"If the task is complete, output
+   a message turn confirming success and summarising what was accomplished."* The
+   assistant needs to see the tool result immediately to decide whether to call the
+   next chain step or issue a closing summary. Adding a UserSimulator turn in between
+   adds an extra exchange that the assistant prompt does not anticipate.
+
+The practical flow with this routing:
+```
+user_turn → assistant_turn → executor (tool result appended as role="user")
+                → assistant_turn (sees result, synthesises or calls next tool)
+                → [if message + chain complete] finalize
+```
+
 ---
 
 ## §6 Evaluation Pipeline

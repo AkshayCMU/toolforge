@@ -681,10 +681,10 @@ START → plan → user_turn → assistant_turn
 - Only executor mutates `SessionState`.
 **Principles:** P3 (state flows through graph; executor is sole mutator), P4 (each node independently testable).
 **Done when:**
-- [ ] `generate_one(seed=42, ...)` produces one valid conversation end-to-end.
-- [ ] Unit test: mocked sampler → generation crashes (proves hard dependency).
-- [ ] Smoke test: `toolforge generate --n 3 --seed 42` produces 3 valid records.
-- [ ] Commit: `feat(generator): single-conversation langgraph loop`.
+- [x] `generate_one(seed=42, ...)` produces one valid conversation end-to-end.
+- [x] Unit test: mocked sampler → generation crashes (proves hard dependency).
+- [ ] Smoke test: `toolforge generate --n 3 --seed 42` produces 3 valid records. ← F7 (CLI wiring)
+- [x] Commit: `feat(generator): single-conversation langgraph loop`.
 
 ---
 
