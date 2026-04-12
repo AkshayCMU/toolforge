@@ -186,10 +186,13 @@ def evaluate(
 
     json_path, md_path = save_reports(report, out)
 
+    def _fmt_pct(v: object) -> str:
+        return f"{v:.1%}" if isinstance(v, float) else "n/a"
+
     q = metrics["quality"]
     typer.echo(f"\nResults ({run_label}):")
     typer.echo(f"  n={q['n']}  mean_judge={q.get('mean_judge_score')}  pass_rate={q.get('pass_rate')}")
-    typer.echo(f"  multi-step={q.get('pct_multi_step'):.1%}  multi-tool={q.get('pct_multi_tool'):.1%}  disambiguation={q.get('pct_disambiguation'):.1%}")
+    typer.echo(f"  multi-step={_fmt_pct(q.get('pct_multi_step'))}  multi-tool={_fmt_pct(q.get('pct_multi_tool'))}  disambiguation={_fmt_pct(q.get('pct_disambiguation'))}")
     if diversity and "diversity" in metrics:
         d = metrics["diversity"]
         typer.echo(f"  entropy={d.get('tool_coverage_entropy')}  distinct-2={d.get('distinct_bigrams')}  dispersion={d.get('embedding_dispersion')}")

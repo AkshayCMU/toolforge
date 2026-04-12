@@ -472,3 +472,54 @@ def test_compare_reports_no_crash_on_missing_diversity() -> None:
     # Should not raise even without diversity key
     result = compare_reports(ra, rb)
     assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# toolforge evaluate CLI — empty JSONL safety
+# ---------------------------------------------------------------------------
+
+def test_evaluate_cli_empty_jsonl_does_not_crash(tmp_path: pytest.fixture) -> None:  # type: ignore[valid-type]
+    """toolforge evaluate on an empty JSONL file must exit 0 without crashing.
+
+    Regression test for the :.1% crash on None percentage metrics.
+    """
+    from typer.testing import CliRunner
+    from toolforge.cli import app
+
+    empty_jsonl = tmp_path / "empty.jsonl"
+    empty_jsonl.write_text("", encoding="utf-8")
+    out_path = tmp_path / "reports" / "eval.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["evaluate", "--in", str(empty_jsonl), "--out", str(out_path), "--no-diversity"],
+    )
+
+    assert result.exit_code == 0, (
+        f"CLI crashed on empty JSONL.\nOutput: {result.output}\n"
+        f"Exception: {result.exception}"
+    )
+    assert "n=0" in result.output
+
+
+def test_evaluate_cli_empty_jsonl_shows_na_for_percentages(tmp_path: pytest.fixture) -> None:  # type: ignore[valid-type]
+    """Percentage fields display 'n/a' (not a format crash) on empty input."""
+    from typer.testing import CliRunner
+    from toolforge.cli import app
+
+    empty_jsonl = tmp_path / "empty.jsonl"
+    empty_jsonl.write_text("", encoding="utf-8")
+    out_path = tmp_path / "reports" / "eval.json"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["evaluate", "--in", str(empty_jsonl), "--out", str(out_path), "--no-diversity"],
+    )
+
+    assert result.exit_code == 0
+    # All three percentage fields must show n/a, not a Python traceback
+    assert "multi-step=n/a" in result.output
+    assert "multi-tool=n/a" in result.output
+    assert "disambiguation=n/a" in result.output
