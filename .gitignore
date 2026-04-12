@@ -27,6 +27,9 @@ reports/
 .cache/
 *.jsonl
 
+# Test fixture raw data (bulk ToolBench copies — never commit)
+tests/fixtures/toolbench_mini/data/
+
 # Tool artifacts
 *.pkl
 

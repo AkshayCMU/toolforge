@@ -56,6 +56,11 @@ from toolforge.execution.executor import Executor
 from toolforge.execution.session import make_session, session_to_dict
 from toolforge.generator.state import Conversation, ConversationState, _to_registry_id
 from toolforge.graph.sampler import ChainSampler
+from toolforge.memory.corpus_stats import (
+    MAX_ACCEPT_RETRIES,
+    CorpusDiversityTracker,
+    NoOpDiversityTracker,
+)
 from toolforge.registry.models import Endpoint
 
 log = structlog.get_logger(__name__)
@@ -83,6 +88,7 @@ class ConversationGenerator:
         judge: Judge,
         *,
         repair_agent: RepairAgent | None = None,
+        tracker: CorpusDiversityTracker | NoOpDiversityTracker | None = None,
     ) -> None:
         self._sampler = sampler
         self._registry = registry
@@ -93,6 +99,10 @@ class ConversationGenerator:
         self._assistant = assistant
         self._judge = judge
         self._repair_agent = repair_agent
+        # Default to no-op tracker so existing callers need no changes.
+        self._tracker: CorpusDiversityTracker | NoOpDiversityTracker = (
+            tracker if tracker is not None else NoOpDiversityTracker()
+        )
         self._graph = self._build_graph()
 
     def run(self, initial_state: ConversationState) -> ConversationState:
@@ -147,12 +157,53 @@ class ConversationGenerator:
     # ------------------------------------------------------------------
 
     def _plan_node(self, state: ConversationState) -> dict[str, Any]:
-        """Sample chain, look up Endpoints, call Planner, initialise SessionState."""
-        result = self._sampler.sample(state["constraints"], seed=state["seed"])
-        if result.truncated:
+        """Sample chain, look up Endpoints, call Planner, initialise SessionState.
+
+        Sampling uses diversity steering weights from the tracker (soft bias).
+        After sampling, should_accept() is checked (hard caps).  On rejection
+        the seed is incremented by the attempt number and we retry.  If all
+        MAX_ACCEPT_RETRIES attempts fail we raise RuntimeError — no silent
+        fallback (P1).
+        """
+        base_seed: int = state["seed"]
+        steering = self._tracker.steering_weights()
+
+        result = None
+        last_reject_reason: str = ""
+        for attempt in range(MAX_ACCEPT_RETRIES):
+            candidate = self._sampler.sample(
+                state["constraints"],
+                seed=base_seed + attempt,
+                steering=steering or None,
+            )
+            if candidate.truncated:
+                raise RuntimeError(
+                    f"ChainSampler failed: {candidate.failure_reason.value}. "
+                    "No hardcoded-chain fallback exists — fix constraints or graph."
+                )
+            accepted, last_reject_reason = self._tracker.should_accept(
+                candidate.endpoint_ids
+            )
+            if accepted:
+                result = candidate
+                if attempt > 0:
+                    log.info(
+                        "generator.plan_node.diversity_retry_accepted",
+                        attempt=attempt,
+                        seed_used=base_seed + attempt,
+                    )
+                break
+            log.debug(
+                "generator.plan_node.diversity_reject",
+                attempt=attempt,
+                reason=last_reject_reason,
+            )
+
+        if result is None:
             raise RuntimeError(
-                f"ChainSampler failed: {result.failure_reason.value}. "
-                "No hardcoded-chain fallback exists — fix constraints or graph."
+                f"Diversity tracker rejected all {MAX_ACCEPT_RETRIES} chain "
+                f"candidates (last reason: {last_reject_reason}). "
+                "Loosen caps or increase MAX_ACCEPT_RETRIES."
             )
 
         chain_ids = [_to_registry_id(nid) for nid in result.endpoint_ids]

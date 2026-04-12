@@ -756,7 +756,7 @@ twice, give up.
 
 # Phase 6 — Corpus Memory + Steering (≈1.5 hours)
 
-## F6.1 — CorpusDiversityTracker (deterministic) ☐
+## F6.1 — CorpusDiversityTracker (deterministic) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** `src/toolforge/memory/corpus_stats.py`.
@@ -781,11 +781,11 @@ always returns `(True, "ok")` and `sampling_weight` always returns `1.0`.
 - Sampler (F2.2) consults this tracker on every call.
 **Principles:** P5 (this IS P5 — diversity by design, not post-hoc), P2 (deterministic; diversity experiment reproducibility depends on this).
 **Done when:**
-- [ ] Hard caps fire correctly in unit tests.
-- [ ] Sampling weights are inverse-frequency.
-- [ ] Stub mode short-circuits everything for `--no-cross-conversation-steering`.
-- [ ] Sampler wired to consult tracker.
-- [ ] Commit: `feat(memory): corpus diversity tracker`.
+- [x] Hard caps fire correctly in unit tests.
+- [x] Sampling weights are inverse-frequency.
+- [x] Stub mode short-circuits everything for `--no-cross-conversation-steering`.
+- [x] Sampler wired to consult tracker.
+- [x] Commit: `feat(memory): corpus diversity tracker`.
 
 ---
 
