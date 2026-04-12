@@ -50,10 +50,11 @@ from langgraph.graph import END, StateGraph
 from toolforge.agents.assistant import Assistant, select_distractors
 from toolforge.agents.judge import Judge
 from toolforge.agents.planner import Planner
+from toolforge.agents.repair import RepairAgent
 from toolforge.agents.user_sim import UserSimulator
 from toolforge.execution.executor import Executor
-from toolforge.execution.session import make_session
-from toolforge.generator.state import ConversationState, _to_registry_id
+from toolforge.execution.session import make_session, session_to_dict
+from toolforge.generator.state import Conversation, ConversationState, _to_registry_id
 from toolforge.graph.sampler import ChainSampler
 from toolforge.registry.models import Endpoint
 
@@ -80,6 +81,8 @@ class ConversationGenerator:
         user_sim: UserSimulator,
         assistant: Assistant,
         judge: Judge,
+        *,
+        repair_agent: RepairAgent | None = None,
     ) -> None:
         self._sampler = sampler
         self._registry = registry
@@ -89,6 +92,7 @@ class ConversationGenerator:
         self._user_sim = user_sim
         self._assistant = assistant
         self._judge = judge
+        self._repair_agent = repair_agent
         self._graph = self._build_graph()
 
     def run(self, initial_state: ConversationState) -> ConversationState:
@@ -123,12 +127,18 @@ class ConversationGenerator:
             {"assistant_turn": "assistant_turn", "finalize": "finalize"},
         )
         workflow.add_edge("finalize", "judge")
-        workflow.add_conditional_edges(
-            "judge",
-            _route_after_judge,
-            {END: END},
-            # F5.2 repair hook: add "repair" → "judge" edge here when F5.2 ships
-        )
+
+        if self._repair_agent is not None:
+            workflow.add_node("repair", self._repair_node)
+            workflow.add_conditional_edges(
+                "judge",
+                _route_after_judge,
+                {END: END, "repair": "repair"},
+            )
+            workflow.add_edge("repair", END)
+        else:
+            # No repair agent — unconditionally end after judge.
+            workflow.add_edge("judge", END)
 
         return workflow.compile()
 
@@ -288,6 +298,48 @@ class ConversationGenerator:
             "status": status,
         }
 
+    def _repair_node(self, state: ConversationState) -> dict[str, Any]:
+        """Apply the F5.2 repair loop to a failed conversation.
+
+        Validates, calls RepairAgent, applies edits, re-validates, and
+        re-judges — all inside run_repair().  The graph routes here only
+        when self._repair_agent is not None and status == "failed".
+        """
+        from toolforge.evaluation.repair import run_repair  # local to avoid circular import at module level
+
+        assert self._repair_agent is not None  # guard — only wired when set
+
+        conv = Conversation(
+            conversation_id=state["conversation_id"],
+            seed=state["seed"],
+            sampled_chain=state["sampled_chain"],
+            messages=state["messages"],
+            session_summary=session_to_dict(state["session_state"]),
+            judge_result=state["judge_result"],
+            status=state["status"],
+        )
+
+        repaired_conv, judge_result, attempts_used = run_repair(
+            conv=conv,
+            state=state["session_state"],
+            repair_agent=self._repair_agent,
+            judge=self._judge,
+        )
+
+        new_status = "done" if (judge_result is not None and judge_result.overall_pass) else "failed"
+        log.info(
+            "generator.repair",
+            conversation_id=state["conversation_id"],
+            attempts_used=attempts_used,
+            new_status=new_status,
+        )
+        return {
+            "messages": repaired_conv.messages,
+            "judge_result": judge_result,
+            "repair_attempts": state["repair_attempts"] + attempts_used,
+            "status": new_status,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Routing functions (pure functions — independently testable)
@@ -323,10 +375,13 @@ def _route_after_executor(state: ConversationState) -> str:
     return "assistant_turn"
 
 
-def _route_after_judge(state: ConversationState) -> str:  # noqa: ARG001
-    """F5.2 repair hook boundary.  In F4.6, always END.
+def _route_after_judge(state: ConversationState) -> str:
+    """Route to repair if the conversation failed; otherwise END.
 
-    When F5.2 ships: add routing for state["status"] == "failed" and
-    state["repair_attempts"] < 2 → "repair".
+    run_repair() owns the max-attempts cap — this router only checks status.
+    This function is only registered as a conditional edge when repair_agent
+    is not None (see _build_graph), so returning "repair" is always safe.
     """
+    if state["status"] == "failed":
+        return "repair"
     return END

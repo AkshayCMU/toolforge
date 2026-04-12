@@ -690,7 +690,7 @@ START → plan → user_turn → assistant_turn
 
 # Phase 5 — Validation + Repair (≈1.5 hours)
 
-## F5.1 — Stage-level structural validation pipeline ☐
+## F5.1 — Stage-level structural validation pipeline ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** finished conversation + `SessionState`;
@@ -713,14 +713,14 @@ Five validators, all pure functions (no I/O, no LLM):
 - Conversation only reaches the judge after passing all hard validators.
 **Principles:** P4 (this IS P4 — modular evaluation, failures localize to a stage).
 **Done when:**
-- [ ] All five validators implemented.
-- [ ] Unit test: deliberately broken conv (hallucinated ID, missing summary, malformed
+- [x] All five validators implemented.
+- [x] Unit test: deliberately broken conv (hallucinated ID, missing summary, malformed
   structure) → each fires the right validator.
-- [ ] Commit: `feat(evaluation): stage-level validation pipeline`.
+- [x] Commit: `feat(evaluation): stage-level validation pipeline`.
 
 ---
 
-## F5.2 — Repair loop (Tier 1 soft repair) ☐
+## F5.2 — Repair loop (Tier 1 soft repair) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** failing conversation, `JudgeResult` and/or `ValidationResult`s;
@@ -748,9 +748,9 @@ twice, give up.
 **Principles:** P4 (targeted repair on stage-level failures = payoff for the validation pipeline).
 **REQUIRED by assignment:** integration test proves this works.
 **Done when:**
-- [ ] Integration test: hallucinated-ID conversation → repair fixes it → judge re-passes.
-- [ ] Unit test: max-attempts guard works.
-- [ ] Commit: `feat(agents): tier-1 repair loop`.
+- [x] Integration test: hallucinated-ID conversation → repair fixes it → judge re-passes.
+- [x] Unit test: max-attempts guard works.
+- [x] Commit: `feat(agents): tier-1 repair loop`.
 
 ---
 

@@ -437,6 +437,23 @@ user_turn → assistant_turn → executor (tool result appended as role="user")
                 → [if message + chain complete] finalize
 ```
 
+### §5.6 `RepairOperation.content` Field: Deliberate Deviation from Spec
+
+FEATURES.md §F5.2 specifies `RepairOperation` as a discriminated union of
+`RegenerateTurn` and `AppendTurn`, each carrying only a `reason` field alongside
+metadata such as `turn_index` or `role`.
+
+The implementation adds a `content` field to each operation variant. This makes
+`run_repair` stateless — the repair agent produces the full corrected turn text
+directly, removing the need to re-invoke the assistant agent for regeneration.
+The tradeoff is that repair quality depends entirely on the repair agent's ability
+to produce valid tool-call syntax without a second LLM pass.
+
+**Why accepted:** The spec's intent is targeted repair — avoid full-conversation
+regeneration. Producing corrected content inline satisfies that intent while
+eliminating an extra LLM round-trip and the state-management complexity of
+re-routing through the generator graph mid-repair.
+
 ---
 
 ## §6 Evaluation Pipeline
