@@ -857,7 +857,7 @@ producing JSONL. Each record includes:
 
 ---
 
-## F7.2 — `toolforge evaluate` + diversity metrics ☐
+## F7.2 — `toolforge evaluate` + diversity metrics ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** JSONL run file; `src/toolforge/evaluation/metrics.py`,
@@ -892,7 +892,7 @@ they measure the three things the steering mechanism is designed to affect.
 
 ---
 
-## F7.3 — `toolforge compare` (Run A vs Run B) ☐
+## F7.3 — `toolforge compare` (Run A vs Run B) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** two evaluation reports from F7.2.

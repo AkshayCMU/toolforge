@@ -159,15 +159,73 @@ def evaluate(
     ),
 ) -> None:
     """Validate and score a generated conversation dataset."""
-    typer.echo("not implemented")
-    raise typer.Exit(0)
+    import json as _json
+
+    from toolforge.evaluation.metrics import compute_all_metrics
+    from toolforge.evaluation.report import build_report, save_reports
+
+    configure_logging()
+
+    if not in_path.exists():
+        typer.echo(f"Error: input file not found: {in_path}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Loading records from {in_path} ...")
+    records: list[dict] = []
+    with in_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(_json.loads(line))
+
+    typer.echo(f"Loaded {len(records)} records. Computing metrics ...")
+
+    metrics = compute_all_metrics(records, include_diversity=diversity)
+    run_label = in_path.stem
+    report = build_report(metrics, run_label=run_label, source_path=str(in_path))
+
+    json_path, md_path = save_reports(report, out)
+
+    q = metrics["quality"]
+    typer.echo(f"\nResults ({run_label}):")
+    typer.echo(f"  n={q['n']}  mean_judge={q.get('mean_judge_score')}  pass_rate={q.get('pass_rate')}")
+    typer.echo(f"  multi-step={q.get('pct_multi_step'):.1%}  multi-tool={q.get('pct_multi_tool'):.1%}  disambiguation={q.get('pct_disambiguation'):.1%}")
+    if diversity and "diversity" in metrics:
+        d = metrics["diversity"]
+        typer.echo(f"  entropy={d.get('tool_coverage_entropy')}  distinct-2={d.get('distinct_bigrams')}  dispersion={d.get('embedding_dispersion')}")
+    typer.echo(f"\nReports written to:\n  {json_path}\n  {md_path}")
 
 
 @app.command()
 def compare(
-    a: Path = typer.Option(..., "--a", help="Path to Run A JSONL (steering off)."),
-    b: Path = typer.Option(..., "--b", help="Path to Run B JSONL (steering on)."),
+    a: Path = typer.Option(..., "--a", help="Path to Run A evaluation report (JSON)."),
+    b: Path = typer.Option(..., "--b", help="Path to Run B evaluation report (JSON)."),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Optional path to save the comparison Markdown. Defaults to reports/comparison.md.",
+    ),
 ) -> None:
-    """Compare two runs for diversity and quality (Run A vs Run B experiment)."""
-    typer.echo("not implemented")
-    raise typer.Exit(0)
+    """Compare two evaluation reports (Run A vs Run B experiment)."""
+    import json as _json
+
+    from toolforge.evaluation.report import compare_reports
+
+    configure_logging()
+
+    for p in (a, b):
+        if not p.exists():
+            typer.echo(f"Error: report file not found: {p}", err=True)
+            raise typer.Exit(1)
+
+    report_a = _json.loads(a.read_text(encoding="utf-8"))
+    report_b = _json.loads(b.read_text(encoding="utf-8"))
+
+    comparison_md = compare_reports(report_a, report_b)
+
+    typer.echo(comparison_md)
+
+    save_path = out or Path("reports/comparison.md")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path.write_text(comparison_md, encoding="utf-8")
+    typer.echo(f"\nComparison saved to: {save_path}")
