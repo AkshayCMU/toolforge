@@ -11,19 +11,29 @@ this stage. Each agent's concrete method signature is the typed contract.
 
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 
 
 class Agent(ABC):
     """Abstract base for all toolforge agents.
 
-    Subclasses must set `name` as a class-level string constant.
+    Subclasses must define `name` as a class-level string constant.
     `system_prompt` should be set at class-definition time (e.g. loaded from
     a prompts/*.md file).  Both are used by LLMClient for cache-key context
     and structured logging.
+
+    `name` is declared abstract so that Python's ABC machinery rejects direct
+    instantiation of `Agent` itself (raises TypeError with "abstract").
+    A plain class-level string assignment (e.g. `name = "planner"`) in a
+    subclass satisfies the abstract declaration.
     """
 
-    name: str  # class-level constant — must be defined by every subclass
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Unique agent identifier used in structured logging."""
+        ...
+
     system_prompt: str = ""  # overridden by concrete agents
 
     def __init__(self, client: "LLMClient") -> None:  # noqa: F821

@@ -97,6 +97,7 @@ class Assistant(Agent):
             user_prompt,
             AssistantTurn,
             prompt_version="v1",
+            agent_name=self.name,
         )
 
     # ------------------------------------------------------------------
@@ -161,9 +162,17 @@ def select_distractors(
     same_cat_sorted = sorted(same_cat, key=lambda e: e.id)
     other_cat_sorted = sorted(other_cat, key=lambda e: e.id)
 
-    pool = same_cat_sorted + other_cat_sorted
-    k = min(n, len(pool))
-    return rng.sample(pool, k)
+    # Take same-category distractors first (true priority — P5 domain coherence).
+    # Only fall back to cross-category when same-category pool is exhausted.
+    same_take = min(n, len(same_cat_sorted))
+    selected = rng.sample(same_cat_sorted, same_take) if same_take > 0 else []
+
+    remaining = n - len(selected)
+    if remaining > 0 and other_cat_sorted:
+        other_take = min(remaining, len(other_cat_sorted))
+        selected = selected + rng.sample(other_cat_sorted, other_take)
+
+    return selected
 
 
 # ---------------------------------------------------------------------------

@@ -70,6 +70,7 @@ class UserSimulator(Agent):
             system_prompt,
             user_prompt,
             prompt_version="v1",
+            agent_name=self.name,
         )
 
     # ------------------------------------------------------------------

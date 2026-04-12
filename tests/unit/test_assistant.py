@@ -216,3 +216,35 @@ def test_select_distractors_is_deterministic() -> None:
     r1 = select_distractors(chain, all_eps, seed=7, n=3)
     r2 = select_distractors(chain, all_eps, seed=7, n=3)
     assert [e.id for e in r1] == [e.id for e in r2]
+
+
+def test_select_distractors_same_category_priority() -> None:
+    """When enough same-category endpoints exist, all n distractors come from same category."""
+    chain = [_ep("Travel/Hotels/createBooking")]
+    same_cat = [_ep(f"Travel/Hotels/ep{i}") for i in range(5)]
+    other_cat = [_ep(f"Financial/Payments/ep{i}") for i in range(10)]
+    all_eps = same_cat + other_cat
+
+    result = select_distractors(chain, all_eps, seed=42, n=3)
+    assert len(result) == 3
+    # All 3 must be same-category (Travel) since there are 5 candidates
+    result_cats = {ep.id.split("/")[0] for ep in result}
+    assert result_cats == {"Travel"}
+
+
+def test_select_distractors_falls_back_to_other_category() -> None:
+    """When same-category pool is exhausted, falls back to other-category distractors."""
+    chain = [_ep("Travel/Hotels/createBooking")]
+    # Only 1 same-category candidate (need 3)
+    same_cat = [_ep("Travel/Hotels/alternate")]
+    other_cat = [_ep(f"Financial/Payments/ep{i}") for i in range(5)]
+    all_eps = same_cat + other_cat
+
+    result = select_distractors(chain, all_eps, seed=42, n=3)
+    assert len(result) == 3
+    result_ids = [ep.id for ep in result]
+    # The same-category one must be present
+    assert "Travel/Hotels/alternate" in result_ids
+    # The remaining 2 come from Financial
+    financial_count = sum(1 for ep in result if ep.id.startswith("Financial"))
+    assert financial_count == 2

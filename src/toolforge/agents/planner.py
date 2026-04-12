@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from toolforge.agents.base import Agent
 from toolforge.agents.llm_client import LLMClient
+from toolforge.registry.models import Endpoint
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "planner.md"
 
@@ -64,6 +65,7 @@ class Planner(Agent):
         chain: list[str],
         persona_seed: int,
         diversity_hints: list[str] | None = None,
+        chain_endpoints: list[Endpoint] | None = None,
     ) -> TaskPlan:
         """Generate a TaskPlan for the given endpoint chain.
 
@@ -74,13 +76,19 @@ class Planner(Agent):
             diversity_hints: Optional list of archetype strings to avoid
                              (injected by F6.1 CorpusDiversityTracker).
                              Stub in this slice — ignored if None.
+            chain_endpoints: Optional Endpoint objects for the chain, used to
+                             enrich the prompt with descriptions and parameter
+                             names. Falls back to ID-only formatting when None.
         """
-        user_prompt = self._build_user_prompt(chain, persona_seed, diversity_hints)
+        user_prompt = self._build_user_prompt(
+            chain, persona_seed, diversity_hints, chain_endpoints
+        )
         return self._client.call(
             self.system_prompt,
             user_prompt,
             TaskPlan,
             prompt_version="v1",
+            agent_name=self.name,
         )
 
     # ------------------------------------------------------------------
@@ -92,14 +100,16 @@ class Planner(Agent):
         chain: list[str],
         persona_seed: int,
         diversity_hints: list[str] | None,
+        chain_endpoints: list[Endpoint] | None = None,
     ) -> str:
+        ep_map = {ep.id: ep for ep in (chain_endpoints or [])}
         lines: list[str] = []
         lines.append(f"Persona seed: {persona_seed}")
         lines.append("")
         lines.append("## API call sequence")
         lines.append("")
         for i, ep_id in enumerate(chain, start=1):
-            lines.append(f"{i}. {_summarise_endpoint(ep_id)}")
+            lines.append(f"{i}. {_summarise_endpoint(ep_id, ep_map.get(ep_id))}")
         lines.append("")
         if diversity_hints:
             lines.append("## Archetypes to avoid (already in the dataset)")
@@ -112,19 +122,29 @@ class Planner(Agent):
         return "\n".join(lines)
 
 
-def _summarise_endpoint(endpoint_id: str) -> str:
-    """Format an endpoint ID for the planner prompt.
+def _summarise_endpoint(endpoint_id: str, endpoint: Endpoint | None = None) -> str:
+    """Format an endpoint for the planner prompt.
 
-    Input: 'Travel/Hotels/createBooking'
-    Output: 'Travel / Hotels / createBooking'
+    When a full Endpoint object is available, includes the description and
+    required parameter names so the LLM has concrete context for planning.
+    Falls back to formatting the ID only when no Endpoint is provided.
 
-    We do not inject the full Endpoint object here because the Planner is
-    constructed without a registry reference (keeping it stateless). The
-    endpoint ID alone is sufficient for the LLM to infer the operation from
-    the naming convention.
+    Input (ID only): 'Travel/Hotels/createBooking'
+    Output (ID only): 'Travel › Hotels › createBooking'
+
+    Input (with Endpoint): same ID + endpoint.description + required params
+    Output: multi-line block with label, description, and required params.
     """
     parts = endpoint_id.split("/")
-    if len(parts) == 3:
-        category, tool, ep_name = parts
-        return f"{category} › {tool} › {ep_name}"
-    return endpoint_id
+    label = (
+        f"{parts[0]} › {parts[1]} › {parts[2]}" if len(parts) == 3 else endpoint_id
+    )
+    if endpoint is None:
+        return label
+    lines = [label]
+    if endpoint.description:
+        lines.append(f"   description: {endpoint.description}")
+    required = [p.name for p in endpoint.parameters if p.required]
+    if required:
+        lines.append(f"   required params: {', '.join(required)}")
+    return "\n".join(lines)

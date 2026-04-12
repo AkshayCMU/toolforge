@@ -86,12 +86,16 @@ class LLMClient:
         output_schema: type[T],
         *,
         prompt_version: str = "v1",
+        agent_name: str | None = None,
     ) -> T:
         """Structured-output call. Returns a validated instance of output_schema.
 
         Uses Anthropic tool-use forcing to guarantee the response conforms to
         the Pydantic schema. The model is given the schema as a single tool
         and forced to call it.
+
+        agent_name is optional and included in the llm_client.usage log event
+        for per-agent token attribution. It does NOT affect the cache key.
         """
         key = self._cache_key(
             system_prompt, user_prompt, output_schema.__name__,
@@ -101,7 +105,8 @@ class LLMClient:
         if cached is not None:
             log.debug("llm_client.cache_hit", model=self._model, schema=output_schema.__name__)
             log.info("llm_client.usage", model=self._model,
-                     prompt_tokens=0, completion_tokens=0, cached=True)
+                     prompt_tokens=0, completion_tokens=0, cached=True,
+                     agent_name=agent_name)
             return output_schema.model_validate(cached["response"])
 
         if self._dry_run:
@@ -110,7 +115,9 @@ class LLMClient:
                 f"(model={self._model}, schema={output_schema.__name__})"
             )
 
-        result = self._live_structured_call(system_prompt, user_prompt, output_schema)
+        result = self._live_structured_call(
+            system_prompt, user_prompt, output_schema, agent_name=agent_name
+        )
         self._save_cache(key, {
             "key": key,
             "model": self._model,
@@ -126,11 +133,15 @@ class LLMClient:
         user_prompt: str,
         *,
         prompt_version: str = "v1",
+        agent_name: str | None = None,
     ) -> str:
         """Free-text call. Returns the assistant's first text content block.
 
         Uses a __text__ sentinel in the cache key so free-text and
         structured calls never collide even with identical prompts.
+
+        agent_name is optional and included in the llm_client.usage log event
+        for per-agent token attribution. It does NOT affect the cache key.
         """
         key = self._cache_key(
             system_prompt, user_prompt, _TEXT_SENTINEL, None, prompt_version,
@@ -139,7 +150,8 @@ class LLMClient:
         if cached is not None:
             log.debug("llm_client.cache_hit", model=self._model, schema=_TEXT_SENTINEL)
             log.info("llm_client.usage", model=self._model,
-                     prompt_tokens=0, completion_tokens=0, cached=True)
+                     prompt_tokens=0, completion_tokens=0, cached=True,
+                     agent_name=agent_name)
             return cached["response"]
 
         if self._dry_run:
@@ -148,7 +160,7 @@ class LLMClient:
                 f"(model={self._model}, schema={_TEXT_SENTINEL})"
             )
 
-        text = self._live_text_call(system_prompt, user_prompt)
+        text = self._live_text_call(system_prompt, user_prompt, agent_name=agent_name)
         self._save_cache(key, {
             "key": key,
             "model": self._model,
@@ -226,6 +238,7 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         output_schema: type[T],
+        agent_name: str | None = None,
     ) -> T:
         """Make a live structured-output call using tool-use forcing.
 
@@ -254,6 +267,7 @@ class LLMClient:
             prompt_tokens=response.usage.input_tokens,
             completion_tokens=response.usage.output_tokens,
             cached=False,
+            agent_name=agent_name,
         )
         # Extract the tool_use content block's input dict and validate.
         for block in response.content:
@@ -275,7 +289,9 @@ class LLMClient:
         )),
         reraise=True,
     )
-    def _live_text_call(self, system_prompt: str, user_prompt: str) -> str:
+    def _live_text_call(
+        self, system_prompt: str, user_prompt: str, agent_name: str | None = None
+    ) -> str:
         """Make a live free-text call."""
         client = self._get_client()
         response = client.messages.create(
@@ -291,6 +307,7 @@ class LLMClient:
             prompt_tokens=response.usage.input_tokens,
             completion_tokens=response.usage.output_tokens,
             cached=False,
+            agent_name=agent_name,
         )
         for block in response.content:
             if hasattr(block, "text"):

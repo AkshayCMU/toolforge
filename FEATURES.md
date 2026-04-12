@@ -506,9 +506,9 @@ output schema.
 - Cache key includes schema hash — changing output schema invalidates entries.
 **Principles:** P2 (structured output is the contract between LLM and consumer), P4 (per-agent token logging).
 **Done when:**
-- [ ] Cached call works; second call with same input is free.
-- [ ] Unit test in `dry_run=True`: pre-seed cache → agent runs → assert no live call.
-- [ ] Commit: `feat(agents): LLM client with structured output and cache`.
+- [x] Cached call works; second call with same input is free.
+- [x] Unit test in `dry_run=True`: pre-seed cache → agent runs → assert no live call.
+- [x] Commit: `feat(agents): LLM client with structured output and cache`.
 
 ---
 
@@ -534,10 +534,10 @@ Model: `claude-haiku-4-5-20251001`. Temperature: 0.7.
 - Prompt template in `prompts/planner.md`, versioned in git.
 **Principles:** P2 (planning is semantic→LLM; output is structured→reliable), P5 (diversity hints inject corpus state).
 **Done when:**
-- [ ] `Planner.plan(...)` returns valid `TaskPlan` for a real sampled chain.
-- [ ] Unit test (cached LLM): ~40% of seeds have non-empty `private_user_knowledge`.
-- [ ] Prompt in `prompts/planner.md`.
-- [ ] Commit: `feat(agents): planner with structured output`.
+- [x] `Planner.plan(...)` returns valid `TaskPlan` for a real sampled chain.
+- [x] Unit test (cached LLM): ~40% of seeds have non-empty `private_user_knowledge`.
+- [x] Prompt in `prompts/planner.md`.
+- [x] Commit: `feat(agents): planner with structured output`.
 
 ---
 
@@ -555,9 +555,9 @@ Model: `claude-haiku-4-5-20251001`. Temperature: 0.7.
 - Volunteers all private knowledge upfront → strengthen prompt. Log as prompt iteration in DESIGN.md.
 **Principles:** P2 (free text is correct here — structuring defeats the purpose).
 **Done when:**
-- [ ] `UserSimulator.respond(...)` produces plausible turns on a real `TaskPlan`.
-- [ ] Manual test: clarifying question → simulator reveals the right field.
-- [ ] Commit: `feat(agents): user simulator with private knowledge`.
+- [x] `UserSimulator.respond(...)` produces plausible turns on a real `TaskPlan`.
+- [x] Manual test: clarifying question → simulator reveals the right field.
+- [x] Commit: `feat(agents): user simulator with private knowledge`.
 
 ---
 
@@ -592,13 +592,13 @@ Model: `claude-haiku-4-5-20251001`. Temperature: 0.
 - Session registry freshly serialized before every turn (P3 soft grounding).
 **Principles:** P2 (structured output non-negotiable), P3 (soft grounding in prompt + hard grounding in executor — both required).
 **Done when:**
-- [ ] `Assistant.act(...)` produces valid structured output.
-- [ ] Unit test (cached, fixed seed): assistant copies an ID from registry rather than inventing.
-- [ ] Commit: `feat(agents): assistant with grounded tool calls`.
+- [x] `Assistant.act(...)` produces valid structured output.
+- [x] Unit test (cached, fixed seed): assistant copies an ID from registry rather than inventing.
+- [x] Commit: `feat(agents): assistant with grounded tool calls`.
 
 ---
 
-## F4.5 — Judge agent (structured 4-dimensional scoring) ☐
+## F4.5 — Judge agent (structured 4-dimensional scoring) ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** finished conversation, available endpoint catalog;
@@ -631,10 +631,10 @@ one negative anchor (a bad conversation) so the judge doesn't default to high sc
 - `task_completion`: original request resolved and confirmed in final message.
 **Principles:** P2 (temperature 0, structured output, different model family = modular evaluation), P4 (judge sees only structurally-valid convs — validation pipeline gates this).
 **Done when:**
-- [ ] `Judge.score(...)` returns valid `JudgeResult` with all four dimensions.
-- [ ] Unit test: same conversation twice → same scores (temperature 0 reproducibility).
-- [ ] Negative anchor example in `prompts/judge.md`.
-- [ ] Commit: `feat(agents): judge with 4-dimensional scoring`.
+- [x] `Judge.score(...)` returns valid `JudgeResult` with all four dimensions.
+- [x] Unit test: same conversation twice → same scores (temperature 0 reproducibility).
+- [x] Negative anchor example in `prompts/judge.md`.
+- [x] Commit: `feat(agents): judge with 4-dimensional scoring`.
 
 ---
 

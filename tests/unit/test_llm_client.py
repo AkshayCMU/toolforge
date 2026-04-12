@@ -287,18 +287,81 @@ def test_cached_call_logs_usage_with_zero_tokens(tmp_path: Path) -> None:
 # F4.1 — Agent ABC
 # ---------------------------------------------------------------------------
 
-def test_agent_abc_cannot_be_called_without_client() -> None:
-    """Agent.__init__ requires a client argument — calling Agent() raises TypeError."""
-    with pytest.raises(TypeError):
-        Agent()  # type: ignore[call-arg]
+def test_agent_abc_cannot_be_instantiated_directly(tmp_path: Path) -> None:
+    """Agent has an abstract member — instantiating it with a client still raises TypeError."""
+    client = LLMClient(model="test", cache_dir=tmp_path)
+    with pytest.raises(TypeError, match="abstract"):
+        Agent(client)  # type: ignore[abstract]
 
 
 def test_agent_subclass_stores_client(tmp_path: Path) -> None:
-    """A concrete subclass stores the client correctly."""
+    """A concrete subclass with name defined stores the client correctly."""
 
     class ConcreteAgent(Agent):
-        name = "concrete"
+        name = "concrete"  # satisfies the abstract property
 
     client = LLMClient(model="test", cache_dir=tmp_path)
     agent = ConcreteAgent(client)
     assert agent._client is client
+
+
+# ---------------------------------------------------------------------------
+# F4.1 — agent_name in usage log
+# ---------------------------------------------------------------------------
+
+def test_agent_name_appears_in_usage_log_live_call(tmp_path: Path) -> None:
+    """Live structured call includes agent_name in the llm_client.usage event."""
+    client = LLMClient(model="claude-test", cache_dir=tmp_path)
+    mock_anthropic = MagicMock()
+    mock_anthropic.messages.create.return_value = _structured_response(
+        {"value": "x", "count": 1}
+    )
+    client._anthropic = mock_anthropic
+
+    with structlog.testing.capture_logs() as logs:
+        client.call("sys", "usr", _SchemaA, agent_name="planner")
+
+    usage_events = [e for e in logs if e.get("event") == "llm_client.usage"]
+    assert any(e.get("agent_name") == "planner" for e in usage_events)
+
+
+def test_agent_name_appears_in_usage_log_cache_hit(tmp_path: Path) -> None:
+    """Cache-hit path includes agent_name in the llm_client.usage event."""
+    client = LLMClient(model="claude-test", cache_dir=tmp_path, dry_run=True)
+    seed_cache(client, "sys", "usr", _SchemaA, {"value": "c", "count": 0})
+
+    with structlog.testing.capture_logs() as logs:
+        client.call("sys", "usr", _SchemaA, agent_name="judge")
+
+    usage_events = [e for e in logs if e.get("event") == "llm_client.usage"]
+    assert any(e.get("agent_name") == "judge" for e in usage_events)
+
+
+def test_agent_name_none_does_not_break_logging(tmp_path: Path) -> None:
+    """Omitting agent_name (None) still produces a valid usage log event."""
+    client = LLMClient(model="claude-test", cache_dir=tmp_path, dry_run=True)
+    seed_cache(client, "sys", "usr", _SchemaA, {"value": "c", "count": 0})
+
+    with structlog.testing.capture_logs() as logs:
+        client.call("sys", "usr", _SchemaA)  # no agent_name
+
+    usage_events = [e for e in logs if e.get("event") == "llm_client.usage"]
+    assert len(usage_events) >= 1
+    # agent_name key is present and is None
+    assert usage_events[0].get("agent_name") is None
+
+
+def test_agent_name_does_not_affect_cache_key(tmp_path: Path) -> None:
+    """agent_name must NOT change the cache key — different names hit the same cache entry."""
+    client = LLMClient(model="claude-test", cache_dir=tmp_path)
+    mock_anthropic = MagicMock()
+    mock_anthropic.messages.create.return_value = _structured_response(
+        {"value": "x", "count": 1}
+    )
+    client._anthropic = mock_anthropic
+
+    client.call("sys", "usr", _SchemaA, agent_name="planner")
+    # Second call with a different agent_name must hit the cache (one live call total).
+    client.call("sys", "usr", _SchemaA, agent_name="judge")
+
+    assert mock_anthropic.messages.create.call_count == 1

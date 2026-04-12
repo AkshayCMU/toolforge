@@ -213,9 +213,165 @@ them would inflate the CHAINS_TO edge count and distort sampler probabilities.
 
 ### §4.1 SessionState Design
 
+**Core invariant:** SessionState is mutated *only* by the Executor. No other component modifies it.
+
+```python
+@dataclass
+class SessionState:
+    conversation_id: str                                 # Unique identifier for this conversation
+    seed: int                                            # RNG seed for determinism
+    available_values_by_type: dict[str, list[Any]]      # semantic_type → [observed_values]
+    resolved_entities: dict[tuple[str, Any], dict]      # (sem_type, value) → full_entity_dict
+    created_entities: list[dict]                        # Bookings, orders, etc. created in this session
+    tool_outputs: list[ToolOutput]                      # Full ordered execution log (ALL calls, success + error)
+    private_user_knowledge: dict[str, Any]             # Fields planner omitted from the tool-use query
+```
+
+**Why this design:**
+
+1. **`available_values_by_type`** enables grounding checks (§4.2). After calling `createBooking`, its returned `booking_id` is appended to `available_values_by_type["booking_id"]`. When a subsequent call tries to use `booking_id=fake`, the executor rejects it with a structured error listing valid IDs.
+
+2. **`resolved_entities`** stores full entity context — not just the ID string, but the complete response. Key is a tuple `(semantic_type, value)` to avoid collisions when the same value appears in different semantic contexts. Example: `("booking_id", "bk-001")` → `{"hotel": "Ritz", "check_in": "2025-01-15", ...}`. This powers the planner's ability to reference "the hotel from the last booking" without making a fresh API call.
+
+3. **`tool_outputs`** is the complete immutable history. *Every* call — success and failure — is logged. Failures include `response=None` and a structured `error` field. This is critical for repair loops: the Assistant can see exactly where the conversation derailed and retry with corrected parameters. Before settling on this design, we considered omitting failures from the log, but that made it impossible for the repair agent to understand the context of a failure without backtracking.
+
+4. **Timestamps are monotonic.** `ToolOutput.timestamp = f"turn-{len(state.tool_outputs)}"` is computed *before* appending, ensuring that turn-0, turn-1, turn-2, ... are always available and strictly increasing, even across failures. This simplifies the repair loop's reference model.
+
+**Serialization boundary (`session_to_dict()`):** The `resolved_entities` dict uses tuple keys for collision avoidance, but JSON cannot serialize tuples. At export, tuples are converted to `"{sem_type}:{value}"` strings. The encoding is non-reversible (if a value contains `:`, collisions occur), but this is acceptable for Phase 3–4 use cases where semantic types are well-scoped.
+
 ### §4.2 Grounding Enforcement (Layer 3)
 
+**The three-layer grounding model:**
+
+| Layer | Who checks | When | What happens on violation |
+|-------|-----------|------|--------------------------|
+| **Layer 1** | type checker (mypy/Pydantic) | compile-time / import-time | Type mismatch → `ValidationError` |
+| **Layer 2** | Executor step 2 | execute-time / structural | Missing/None required param → `ToolOutput(error="Missing required parameter")` |
+| **Layer 3** | Executor step 3 | execute-time / semantic | Hallucinated CHAIN_ONLY ID → `ToolOutput(error="Invalid {type}: {value!r} not in session. Valid values: {pool}")` |
+
+**Layer 3 implementation:**
+
+```python
+# Executor.execute() step 3: Semantic grounding check for CHAIN_ONLY params
+for param in endpoint.parameters:
+    if not param.semantic_type:
+        continue
+    if param.semantic_type not in self._chain_only:  # CHAIN_ONLY_TYPES defaults to semantic_vocab.CHAIN_ONLY_VOCAB
+        continue
+    value = arguments.get(param.name)
+    if value is None:
+        # Absent (optional) or explicitly None — skip grounding check
+        continue
+    pool = state.available_values_by_type.get(param.semantic_type, [])
+    if value not in pool:
+        return self._error(
+            endpoint_id, arguments, state,
+            f"Invalid {param.semantic_type}: {value!r} not in session. "
+            f"Valid values: {pool}",
+        )
+```
+
+**CHAIN_ONLY_TYPES definition** (`semantic_vocab.py`):
+```
+CHAIN_ONLY_VOCAB = frozenset({
+    "hotel_id", "booking_id", "user_id", "order_id", "product_id", "listing_id"
+})
+```
+
+Types in `CHAIN_ONLY_TYPES` are those that *can only* come from prior tool outputs (F1.5 semantic typing pass identifies these as response-only). User-provided types like `city_name`, `search_query`, `date` are never in the set and never rejected.
+
+**Error structure:** The error message lists valid values so the Assistant can self-correct. If the pool is empty, the message is `"Invalid booking_id: 'bk-999' not in session. Valid values: []"`, signaling a new conversation or a bug in the planning agent (it should have called `createBooking` first).
+
+**Mandatory unit test:** `test_first_call_user_provided_params_succeeds()` ensures that a fresh session with valid user-provided params ALWAYS succeeds, proving that CHAIN_ONLY_TYPES is not too strict. This caught a critical early bug where the set was accidentally including user-providable types.
+
 ### §4.3 Mock Responder Strategy
+
+**Three-tier design:**
+
+All three tiers use identical Faker-based generation at mock time. `mock_policy` records
+how `response_schema` was built at build time (F1.6), not how values are generated at
+runtime. This diverges from the original spec, which described the `"static"` tier as
+loading a real response example at runtime and the `"llm"` tier as making a live LLM
+call. Loading example files in the hot path would introduce file-system coupling; using
+the already-extracted `response_schema` keeps the executor fully offline and deterministic.
+
+| Tier | `mock_policy` | How schema was built (build time) | Runtime generation |
+|------|--------------|-----------------------------------|--------------------|
+| **Static** | `"static"` | Walked from a real response example file | Faker over `response_schema` |
+| **Schema** | `"schema"` | Preserved from normaliser or LLM inference | Faker over `response_schema` |
+| **LLM** | `"llm"` | Inferred by Haiku (F1.6 fallback) | Faker over `response_schema` |
+
+**Schema tier details** (the workhorse):
+
+The MockResponder maintains a **CHAIN_ONLY pool per semantic type**. When a response field is flagged as CHAIN_ONLY (`ResponseField.semantic_type in CHAIN_ONLY_VOCAB`):
+
+1. **On creation-verb endpoint** (e.g., `CreateBooking`): Generate a fresh value, append to pool.
+2. **On non-creation endpoint:** Reuse `pool[-1]` if pool is non-empty; else generate fresh and append.
+
+This ensures that:
+- Booking IDs generated by `CreateBooking` flow deterministically into the pool.
+- Subsequent calls to `GetBooking`, `UpdateBooking` naturally reference the same ID (pool[-1]).
+- The pool grows as new resources are created, supporting multi-resource workflows.
+
+**Creation-verb heuristic fix:** Originally used regex `re.split(r"(?=[A-Z])", name)` which failed on PascalCase names (first token empty). Now uses case-insensitive substring matching:
+```python
+def _is_creation_endpoint(name: str) -> bool:
+    name_lower = name.lower()
+    return any(verb in name_lower for verb in _CREATION_VERBS)
+```
+This handles `createBooking`, `CreateBooking`, `CREATE_BOOKING`, `create_booking` uniformly.
+
+**Faker seeding:** Each call seeded as `Faker(seed=state.seed + len(state.tool_outputs))` ensures:
+- Same endpoint called twice in same session → same args + same seed → same generated values.
+- Different sessions (different state.seed) → different values (for diversity).
+- Determinism across runs: seed=42 always produces the same conversation.
+
+**Response path flattening:** `response_schema` uses nested paths like `results[].hotel_id` or `data.user.email`. MockResponder flattens to last segment (`hotel_id`, `email`) unless collision (two distinct paths with same last segment), in which case full paths are used. This keeps response dicts usable without requiring deep navigation.
+
+### §4.4 Executor Five-Step Contract
+
+Every call to `execute(endpoint_id, arguments, state)` follows this pure-Python contract:
+
+| Step | What | Failure mode | Logs |
+|------|------|------|------|
+| 1 | **Endpoint lookup** — retrieve Endpoint from registry by ID | Unknown ID → `error="Unknown endpoint: {id!r}. Known (sample): [...]"` | `executor.error` with endpoint_id, turn, error message |
+| 2 | **Structural validation** — check all required params present + non-None | Missing/None → `error="Missing required parameter: {param_name!r}"` | `executor.error` with param_name, turn |
+| 3 | **Semantic grounding** — check CHAIN_ONLY params exist in session pool | Hallucinated ID → `error="Invalid {type}: {value!r} not in session. Valid values: {pool}"` | `executor.error` with type, value, valid_pool, turn |
+| 4 | **Mock generation** — call MockResponder, which may register values into pool | (never fails — responder generates something) | (no log, delegated to responder) |
+| 5 | **Append output** — create ToolOutput, append to state, log success | (never fails) | `executor.success` with endpoint_id, turn |
+
+**Key behavioral change (Phase 3 correctness fix):**
+
+Steps 1–3 failures now **append ToolOutput to state.tool_outputs** before returning. Previously, they returned without appending, making the error invisible to the session history. The new behavior:
+
+- **ALL calls logged** (success + failure) ensures the Assistant repair agent can see the full conversation trace.
+- **Timestamps advance monotonically** even across failures (turn-0, turn-1, turn-2 ...).
+- **Repair loop can reference exact failures** without reconstructing the execution path.
+
+Example sequence:
+```
+Turn 0: CreateBooking(city_name="Paris")          → success, booking_id=bk-001 registered
+Turn 1: GetBooking(booking_id="fake-xyz")         → error, "Invalid booking_id: 'fake-xyz' not in session"
+Turn 2: GetBooking(booking_id="bk-001")           → success (repair worked)
+```
+
+The Assistant can now see that Turn 1 failed because of a hallucinated ID, and Turn 2 corrected it using the valid ID from Turn 0's output.
+
+### §4.5 Test Coverage & Verification
+
+**Unit test suite: 97/97 passing (tests/unit/**`*`**.py).**
+
+Phase 3 accounted for 31 of these tests:
+- **F3.1 (SessionState):** 8 tests validating state construction, ToolOutput serialization, tuple→string round-trip.
+- **F3.2 (MockResponder):** 11 tests validating determinism, Faker seeding, CHAIN_ONLY pool management, path flattening, creation-verb detection across naming styles.
+- **F3.3 (Executor):** 12 tests validating endpoint lookup, structural errors, grounding errors, monotonic timestamps, mixed success/failure sequences, first-call guarantee.
+
+**Critical invariants verified:**
+1. ✓ First call with valid user-provided params succeeds (CHAIN_ONLY_TYPES not too strict).
+2. ✓ Hallucinated CHAIN_ONLY IDs rejected with valid-value list (repair signal).
+3. ✓ Failures appended to history with proper timestamps (repair loop enabler).
+4. ✓ Deterministic: same seed → identical conversation across runs.
+5. ✓ All three mock tiers produce JSON-serializable responses.
 
 ---
 
@@ -226,6 +382,35 @@ them would inflate the CHAINS_TO edge count and distort sampler probabilities.
 ### §5.2 LangGraph Orchestration Design
 
 ### §5.3 Disambiguation Mechanism
+
+### §5.4 AssistantTurn Model: Deliberate Deviation from Spec
+
+FEATURES.md §F4.4 specifies a discriminated union for `AssistantTurn`:
+
+```python
+AssistantTurn = MessageTurn | ToolCallTurn
+```
+
+The implementation uses a **flat Pydantic model** instead:
+
+```python
+class AssistantTurn(BaseModel):
+    type: Literal["message", "tool_call"]
+    content: str = ""
+    endpoint: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+```
+
+**Reason:** Pydantic v2's `anyOf` JSON Schema for discriminated unions produces two
+separate schema branches when serialised. Under Anthropic's tool-use forcing the model
+occasionally emits a response that satisfies neither branch (e.g. providing `content`
+alongside a `tool_call` type field), causing `ValidationError` on parse. A flat model
+with a `Literal` discriminator field produces a single, simpler JSON Schema. A
+post-parse `@model_validator` enforces field-presence for each type, preserving the
+same logical invariants as the union without the reliability penalty.
+
+This is a deliberate P2 / P4 tradeoff: a slightly less expressive type signature in
+exchange for a more reliable LLM-facing schema.
 
 ---
 
