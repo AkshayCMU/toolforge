@@ -115,6 +115,13 @@ class LLMClient:
                 f"(model={self._model}, schema={output_schema.__name__})"
             )
 
+        log.info(
+            "llm_client.live_call",
+            model=self._model,
+            schema=output_schema.__name__,
+            agent_name=agent_name,
+            key_prefix=key[:8],
+        )
         result = self._live_structured_call(
             system_prompt, user_prompt, output_schema, agent_name=agent_name
         )
@@ -160,6 +167,13 @@ class LLMClient:
                 f"(model={self._model}, schema={_TEXT_SENTINEL})"
             )
 
+        log.info(
+            "llm_client.live_call",
+            model=self._model,
+            schema=_TEXT_SENTINEL,
+            agent_name=agent_name,
+            key_prefix=key[:8],
+        )
         text = self._live_text_call(system_prompt, user_prompt, agent_name=agent_name)
         self._save_cache(key, {
             "key": key,
@@ -219,7 +233,12 @@ class LLMClient:
 
     def _get_client(self) -> anthropic.Anthropic:
         if self._anthropic is None:
-            self._anthropic = anthropic.Anthropic()
+            # Read the key via pydantic-settings (which loads .env) so that
+            # the key does not need to be exported as an OS env var separately.
+            from toolforge.config import get_settings
+            self._anthropic = anthropic.Anthropic(
+                api_key=get_settings().anthropic_api_key
+            )
         return self._anthropic
 
     @retry(

@@ -122,7 +122,7 @@ def generate(
 
     was_steered = not no_cross_conversation_steering
     typer.echo(
-        f"Generating {n} conversations (seed={seed}, steering={'on' if was_steered else 'off'}) → {out}"
+        f"Generating {n} conversations (seed={seed}, steering={'on' if was_steered else 'off'}) -> {out}"
     )
 
     records = generate_batch(

@@ -99,6 +99,18 @@ class ChainSampler:
             if data.get("node_type") == "endpoint" and not data.get("terminal", False)
         )
 
+        # Subset of endpoints that have ≥1 outgoing CHAINS_TO edge.
+        # These are the only valid chain seeds — an endpoint with no CHAINS_TO
+        # out-edges can never grow a chain past length 1.
+        _chains_to_sources: set[str] = {
+            u
+            for u, v, d in graph.edges(data=True)
+            if d.get("edge_type") == "CHAINS_TO"
+        }
+        self._chain_seeds: list[str] = sorted(
+            ep for ep in self._endpoints if ep in _chains_to_sources
+        )
+
         # Map category → sorted list of (non-terminal) endpoint node IDs.
         self._ep_by_category: dict[str, list[str]] = {}
         for nid in self._endpoints:
@@ -159,6 +171,11 @@ class ChainSampler:
             target_length = constraints.length
 
         # Step 2: build seed candidate set.
+        # Prefer endpoints that have outgoing CHAINS_TO edges so the chain
+        # can actually grow.  Fall back to all non-terminal endpoints only
+        # when no such seeds exist (degenerate graph with no chains at all).
+        viable_seeds = self._chain_seeds if self._chain_seeds else self._endpoints
+
         if constraints.must_include_categories:
             seed_candidates: list[str] = []
             for cat in sorted(constraints.must_include_categories):
@@ -170,9 +187,11 @@ class ChainSampler:
                 if ep not in seen:
                     unique_seeds.append(ep)
                     seen.add(ep)
-            seed_candidates = unique_seeds
+            # Restrict to viable seeds (those with outgoing CHAINS_TO edges).
+            viable_set = set(viable_seeds)
+            seed_candidates = [ep for ep in unique_seeds if ep in viable_set] or unique_seeds
         else:
-            seed_candidates = list(self._endpoints)
+            seed_candidates = list(viable_seeds)
 
         if not seed_candidates:
             return ChainResult(

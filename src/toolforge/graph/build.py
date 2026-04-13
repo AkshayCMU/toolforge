@@ -151,8 +151,15 @@ def build_graph(tools: list[Tool], chain_only_types: list[str]) -> nx.MultiDiGra
     # T in chain_only_set). Both endpoint loops are sorted.
     # ------------------------------------------------------------------
     # Build producer/consumer indexes for efficient derivation.
-    # produced_by[ep_id] = sorted set of chain-only types produced
-    # consumed_by[ep_id] = sorted set of all typed params
+    #
+    # CHAINS_TO edges are created for ANY semantic type that flows from a
+    # response field of A into a parameter of B.  The chain_only_set filter
+    # was removed because chain_only_types.json contains types that appear
+    # ONLY as response fields (never as params) — exactly the wrong set to
+    # filter on, since such types can never be consumed and no CHAINS_TO
+    # edges would form.  The executor independently enforces grounding via
+    # CHAIN_ONLY_VOCAB in semantic_vocab.py; the graph only needs structural
+    # reachability.
     produced_by: dict[str, list[str]] = {}
     consumed_by: dict[str, list[str]] = {}
 
@@ -161,8 +168,7 @@ def build_graph(tools: list[Tool], chain_only_types: list[str]) -> nx.MultiDiGra
         for ep in sorted(tool.endpoints, key=lambda e: e.id):
             all_endpoints_sorted.append(ep)
             produced_by[ep.id] = sorted(
-                {f.semantic_type for f in ep.response_schema
-                 if f.semantic_type and f.semantic_type in chain_only_set}
+                {f.semantic_type for f in ep.response_schema if f.semantic_type}
             )
             consumed_by[ep.id] = sorted(
                 {p.semantic_type for p in ep.parameters if p.semantic_type}
