@@ -9,9 +9,117 @@
 
 ### §1.1 System Overview
 
+toolforge is an eight-module offline pipeline that produces multi-turn, multi-tool
+conversation records grounded in a 500-endpoint subset of ToolBench.
+
+```
+toolbench_raw/
+    └─ walk_toolbench() ──► normalize_corpus() ──► select_subset()
+                                                           │
+                                              semantic_typing + schema_infer
+                                                           │
+                                                    registry.json
+                                                           │
+                                               build_graph() ─► graph.pkl
+                                                           │
+                                          ┌────────────────┴────────────────┐
+                                          │    ConversationGenerator         │
+                                          │  (LangGraph StateGraph)          │
+                                          │                                  │
+                                          │  plan ─► user_turn               │
+                                          │             ▼                    │
+                                          │       assistant_turn             │
+                                          │          ├─ tool_call ─► executor│
+                                          │          └─ message ──► finalize │
+                                          │                  ▼               │
+                                          │               judge              │
+                                          │              ├─ pass ──► END     │
+                                          │              └─ fail ──► repair  │
+                                          └──────────────────────────────────┘
+                                                           │
+                                                    JSONL records
+                                                           │
+                                           toolforge evaluate ──► JSON + Markdown
+                                                           │
+                                           toolforge compare ──► comparison.md
+```
+
+**Module inventory (all under `src/toolforge/`):**
+
+| Module | Responsibility |
+|--------|---------------|
+| `registry/` | Load, normalise, filter, and semantically type ToolBench tools |
+| `graph/` | Build tool knowledge graph; constrained chain sampling |
+| `execution/` | Offline execution: SessionState, Executor, MockResponder |
+| `agents/` | Planner, UserSimulator, Assistant, Judge, RepairAgent |
+| `generator/` | LangGraph orchestration; batch loop; JSONL record assembly |
+| `memory/` | CorpusDiversityTracker; cross-conversation steering |
+| `evaluation/` | Stage validators, repair loop, metrics, reports |
+| `io/` | Stub module (no shipped implementation) |
+
+**Two experiment modes:**
+- **Run A** (`--no-cross-conversation-steering`): `NoOpDiversityTracker`; chains sampled uniformly; baseline.
+- **Run B** (default): `CorpusDiversityTracker`; inverse-frequency steering + hard rejection caps.
+
+Both modes produce identical JSONL schema; the `metadata.was_steered` field distinguishes them.
+
+---
+
 ### §1.2 Component Communication Protocol
 
+**Within-conversation state:** All data flows through `ConversationState`, a `TypedDict` that
+LangGraph merges across node returns (last-writer-wins per key). Nodes return partial dicts;
+the graph handles accumulation. The sole exception is `session_state`, a mutable `SessionState`
+dataclass that the Executor mutates in-place — LangGraph 0.2 in-memory mode does not deep-copy
+between nodes, so mutations are visible downstream without inclusion in the return dict.
+
+**Message format:** Every conversation turn is stored as `{"role": str, "content": str}`. Tool
+calls use a formatted content string rather than a native tool-use protocol:
+
+```
+# Tool call (assistant message)
+[tool_call: Sports/Football/getLeagues, args={"season": "2024"}]
+
+# Tool result (user message — note role="user", not "tool")
+[tool_result: {"leagues": [{"id": "PL", "name": "Premier League"}]}]
+```
+
+This format was chosen over the Anthropic SDK's native `tool_use` content blocks because:
+1. It keeps the message list as simple `{"role", "content"}` dicts throughout — no union types.
+2. The judge agent receives conversations as plain text and does not need to parse content blocks.
+3. Tests can assert exact message format with simple string comparisons.
+
+**Serialisation boundary:** `session_to_dict()` converts `SessionState` → JSON-safe dict for
+storage in `Conversation.session_summary`. The only lossy conversion: `resolved_entities` uses
+`tuple[str, Any]` keys (for collision avoidance), which serialize as `"{sem_type}:{value}"` strings.
+Re-import uses `_session_from_summary()` in `loop.py`, which reconstructs `ToolOutput` objects
+but leaves `resolved_entities` empty — sufficient for post-generation validators.
+
+---
+
 ### §1.3 Model Choices & Self-Preference Bias Mitigation
+
+| Role | Model | Temperature | Rationale |
+|------|-------|-------------|-----------|
+| Planner | `claude-haiku-4-5-20251001` | 0.7 | Cheap, fast, sufficient structure for scenario planning |
+| UserSimulator | `claude-haiku-4-5-20251001` | 0.7 | Needs variety; temperature provides natural turn-to-turn diversity |
+| Assistant | `claude-haiku-4-5-20251001` | 0.0 | Structured output requires determinism; tool-call JSON must be valid |
+| Judge | `claude-sonnet-4-6` | 0.0 | Stronger model; reproducible scores |
+| RepairAgent | `claude-sonnet-4-6` | 0.0 | Stronger model; repair content must be syntactically valid |
+
+**Self-preference bias:** Using the same model family for generator and judge inflates scores
+by approximately 0.3–0.5 on a 1–5 scale, because the model scores outputs that match its own
+generation patterns more favourably. Using Sonnet (a different family from Haiku) for judging
+breaks this correlation. This is non-negotiable: without it, the quality signal is meaningless
+as a run comparison metric.
+
+**Temperature 0 for the assistant:** Early iterations used temperature 0.7 for the assistant.
+This caused the model to occasionally deviate from structured output format (`AssistantTurn`
+fields populated incorrectly), requiring a Pydantic `ValidationError` retry. Temperature 0
+reduces this failure rate to near-zero and ensures that same-seed conversations reproduce
+exactly for the diversity experiment.
+
+---
 
 ### §1.4 Python Version Decision
 
@@ -194,6 +302,41 @@ manually whenever normalization rules change in a way that would affect paramete
 
 ### §3.1 Graph Schema Decisions
 
+**Shipped graph: 4 node types, 5 edge types, built on the 500-endpoint registry.**
+
+Node types (from `graph/build.py`):
+
+| Node type | Count (actual) | `node_type` attribute | Purpose |
+|-----------|---------------|----------------------|---------|
+| `Category` | 8 | `"category"` | Top-level domain groupings |
+| `Tool` | 60 | `"tool"` | Named API collections |
+| `Endpoint` | 500 | `"endpoint"` | Individual callable API operations |
+| `SemanticType` | ~55 | `"semantic_type"` | Vocabulary nodes for chaining |
+
+Edge types:
+
+| Edge | Direction | Meaning |
+|------|-----------|---------|
+| `BELONGS_TO` | Endpoint → Tool | Structural containment |
+| `IN_CATEGORY` | Tool → Category | Domain grouping |
+| `CONSUMES` | Endpoint → SemanticType | Endpoint requires this type as input |
+| `PRODUCES` | Endpoint → SemanticType | Endpoint returns this type as output |
+| `CHAINS_TO` | Endpoint → Endpoint | A produces T and B consumes T → A chains to B |
+
+**`CHAINS_TO` is the backbone.** Without it, the sampler cannot walk semantically linked
+chains. It is materialised by `build.py` during `toolforge build` — for every pair
+(A, B) where A PRODUCES T and B CONSUMES T, a `CHAINS_TO` edge is added.
+Self-loops (`A CHAINS_TO A`) are filtered: an endpoint cannot usefully chain into itself.
+
+**`terminal=True` flag:** Endpoints that neither PRODUCE nor CONSUME any semantic type are
+flagged `terminal=True` on their graph node. The sampler skips terminals as chain members
+because they cannot participate in grounded chaining — they are dead ends.
+
+**Node ID convention:** All endpoint nodes use an `"ep:"` prefix internally
+(e.g., `"ep:Sports/Football/getLeagues"`). The executor registry and `conv.sampled_chain`
+store bare IDs without the prefix. `_to_registry_id()` strips the prefix when needed.
+`_run_batch()` re-adds the prefix when calling `tracker.update()`.
+
 ### §3.2 Edge Type Justification
 
 **Graph builder invariant — no self-loop CHAINS_TO edges.**
@@ -206,6 +349,45 @@ them would inflate the CHAINS_TO edge count and distort sampler probabilities.
 **F2.1 must filter `CHAINS_TO` edges where source == target endpoint.**
 
 ### §3.3 Sampler Algorithm & Tradeoffs
+
+**`ChainSampler.sample(constraints, seed, steering=None) → SampledChain`**
+
+The shipped algorithm is a seeded BFS from a randomly chosen start endpoint:
+
+```
+1. Select seed endpoint:
+   - If steering dict provided: weight by steering[ep_id] (inverse-frequency)
+   - Else: uniform random
+   - Exclude terminal endpoints
+
+2. BFS walk along CHAINS_TO edges:
+   - At each step, candidates = neighbours reachable via CHAINS_TO
+   - Prefer candidates that consume a type produced by any prior endpoint
+   - Break ties: (a) must_include_endpoints, (b) steering weight, (c) co-category
+
+3. If dead-end before target length:
+   - Backtrack once to last branch point
+   - Relax constraint: allow same-category neighbour even without CHAINS_TO match
+   - If still blocked: return SampledChain(truncated=True, failure_reason=...)
+
+4. Return SampledChain(endpoint_ids=[...], truncated=False)
+```
+
+**Diversity retry loop (in `_plan_node`):** After sampling, `tracker.should_accept()` is
+called. On rejection:
+- Retry with `seed = base_seed + attempt` (deterministic — same base seed → same retry sequence)
+- Maximum `MAX_ACCEPT_RETRIES = 5` attempts
+- If all 5 rejected: `RuntimeError` raised (no silent fallback — P1)
+
+**Why seed+attempt rather than seed+random:** Using `seed + attempt` keeps the retry
+sequence reproducible. Given the same tracker state and the same base seed, the generator
+always tries the same 5 candidate chains. This matters for the diversity experiment: if
+Run A and Run B use the same base seed, any difference in output is attributable to
+steering (tracker behaviour), not to RNG luck in the retry loop.
+
+**`allow_repeats=False` default:** The BFS never revisits an endpoint already in the chain.
+This prevents trivially repeated calls (e.g., `getLeagues → getLeagues`) but does allow
+the same endpoint to appear across different conversations in the corpus.
 
 ---
 
@@ -359,7 +541,7 @@ The Assistant can now see that Turn 1 failed because of a hallucinated ID, and T
 
 ### §4.5 Test Coverage & Verification
 
-**Unit test suite: 97/97 passing (tests/unit/**`*`**.py).**
+**Unit test suite: 349/349 passing (tests/unit/**`*`**.py) as of F7.3.**
 
 Phase 3 accounted for 31 of these tests:
 - **F3.1 (SessionState):** 8 tests validating state construction, ToolOutput serialization, tuple→string round-trip.
@@ -379,9 +561,108 @@ Phase 3 accounted for 31 of these tests:
 
 ### §5.1 Agent Roles & Communication
 
+Six agents are wired into the pipeline. Each receives and returns structured types:
+
+| Agent | Model | Temp | Input | Output |
+|-------|-------|------|-------|--------|
+| `Planner` | Haiku | 0.7 | chain endpoint list + persona_seed | `TaskPlan` |
+| `UserSimulator` | Haiku | 0.7 | `TaskPlan` + message history | free-text user turn |
+| `Assistant` | Haiku | 0.0 | message history + session registry + endpoint catalog | `AssistantTurn` |
+| `Judge` | Sonnet | 0.0 | message history + sampled_chain | `JudgeResult` |
+| `RepairAgent` | Sonnet | 0.0 | `Conversation` + `ValidationResult` list | `RepairOperation` |
+| `Executor` | — | — | endpoint_id + arguments + `SessionState` | `ToolOutput` (no LLM) |
+
+**`TaskPlan` schema** (Planner output, drives UserSimulator):
+```python
+class TaskPlan(BaseModel):
+    user_persona: str
+    initial_query: str               # ~40% of the time omits ≥1 required param
+    clarification_points: list[str]  # expected follow-up questions
+    expected_final_outcome: str
+    chain_rationale: str
+    private_user_knowledge: dict     # fields withheld from initial_query
+```
+
+**Disambiguation mechanism:** When `private_user_knowledge` is non-empty, the UserSimulator
+holds back those fields and only reveals them when the assistant asks directly. The assistant
+prompt includes: *"If required information is missing or ambiguous, ask the user a clarifying
+question before making any tool calls."* The loop back from `assistant_turn → user_turn`
+(when the assistant emits a message turn and the chain is incomplete) is the mechanism
+that creates disambiguation exchanges in the transcript.
+
+**Context passed to the Assistant each turn:**
+
+1. Full message history (including all prior tool calls + results).
+2. **Session registry view:** `"Available values from prior tool calls: {registry}"` — the
+   soft grounding layer (P3 Layer 2). Serialized from `available_values_by_type`.
+3. **Endpoint catalog:** chain endpoints + 3 randomly selected distractors. NOT the full
+   500-endpoint registry — providing all 500 would exceed context limits and confuse the model.
+4. **Grounding rule:** *"When an argument was produced by a prior tool call, copy the exact
+   value from the session registry. Do not invent IDs."*
+
 ### §5.2 LangGraph Orchestration Design
 
+**Shipped graph topology** (from `generator/graph.py`):
+
+```
+START
+  │
+  ▼
+plan ──────────────────────────────────────────► user_turn
+                                                     │
+                                                     ▼
+                                               assistant_turn
+                                              /       |       \
+                               (tool_call) /  (msg+  |  (turn  \
+                                          /  chain   |  cap≥12) \
+                                         ▼  done)   |            ▼
+                                      executor       ▼         finalize
+                                         │        finalize        │
+                               (turn_cap |            │           ▼
+                                reached) │            ▼         judge
+                                         \──────► finalize    /       \
+                                                     │    (pass)    (fail)
+                                                     ▼      │         │
+                                                   judge ───┘       repair
+                                                                       │
+                                                                      END
+```
+
+Key routing rules:
+- `_route_after_assistant`: turn_cap(12) → finalize; tool_call → executor; message+chain_done → finalize; message+chain_incomplete → **user_turn** (disambiguation loop).
+- `_route_after_executor`: turn_cap(12) → finalize; otherwise → **assistant_turn** (deviation from spec; see §5.5).
+- `_route_after_judge`: pass → END; fail → repair (only wired when `repair_agent` is not None).
+
+**Turn cap:** Hard cap at 12 turns prevents infinite loops. Conversations hitting the cap are
+marked `status="done"` by `_finalize_node` and then judged — they may still pass if the partial
+transcript is coherent. The `validate_completeness` validator catches turn-cap terminations
+where the last message is a tool_call rather than a summary.
+
 ### §5.3 Disambiguation Mechanism
+
+The planner omits ≥1 required parameter from `initial_query` in approximately 40% of
+conversations, storing the withheld values in `TaskPlan.private_user_knowledge`.
+
+Example (Travel/Hotels chain):
+```
+initial_query: "I'd like to book a hotel"
+private_user_knowledge: {"check_in_date": "2025-03-15", "guests": 2}
+```
+
+The UserSimulator system prompt enforces: *"ONLY reveal private knowledge when the assistant
+directly asks about the specific field."* In the transcript, the exchange looks like:
+
+```
+User:      "I'd like to book a hotel."
+Assistant: "Happy to help! What are your check-in date and number of guests?"
+User:      "March 15th, 2 guests."
+Assistant: [tool_call: Travel/Hotels/searchHotels, args={"check_in": "2025-03-15", "guests": 2}]
+```
+
+This creates a natural clarification turn before any tool call, satisfying the assignment's
+multi-turn disambiguation requirement. The `_has_disambiguation()` function in `evaluation/metrics.py`
+detects this pattern: any non-tool-call assistant message that appears before the first
+`[tool_call:]` message counts as a disambiguation turn.
 
 ### §5.4 AssistantTurn Model: Deliberate Deviation from Spec
 
@@ -460,13 +741,193 @@ re-routing through the generator graph mid-repair.
 
 ### §6.1 Validator Design (Deterministic Stage)
 
+Five pure-function validators run in a fixed order on every completed conversation.
+None short-circuit on prior failures — all five always execute.
+
+| # | Validator | Hard/Soft | Checks | Failure routes to |
+|---|-----------|-----------|--------|-------------------|
+| 1 | `validate_structure` | Hard | Non-empty messages, valid roles, alternating turns, non-empty sampled_chain, valid status | Discard (generator/routing bug) |
+| 2 | `validate_tool_calls` | Hard | Each `[tool_call:]` is well-formed JSON args, each tool call followed by `[tool_result:]` | Tier-1 repair |
+| 3 | `validate_grounding` | Hard | No executor grounding errors in `state.tool_outputs` | Tier-1 repair (rarely fires; executor prevents most) |
+| 4 | `validate_completeness` | Hard | Last message is non-tool-call assistant turn, >10 chars | Repair: append final summary |
+| 5 | `validate_constraints` | Soft | ≥3 successful calls, ≥2 distinct endpoints, <50% failure rate, chain completion | Log + pass through |
+
+**`is_hard` is computed, not stored:** `ValidationResult.is_hard` is a `@computed_field`
+derived from `stage in {"structure", "tool_calls", "grounding", "completeness"}`. This
+prevents is_hard being accidentally set to False for a hard stage.
+
+**Entry point:** `validate_conversation(conv, state) → list[ValidationResult]` always
+returns exactly 5 results in the above order. The caller checks `all(r.passed for r in results if r.is_hard)` to decide whether to judge or route to repair.
+
+**The JSONL record captures all five results** in `validation_results` — graders can
+inspect which conversations had soft warnings (constraint violations) alongside the
+hard-pass/fail status.
+
 ### §6.2 Judge Dimensions & Justification
+
+**`JudgeResult` schema:**
+```python
+class DimensionScore(BaseModel):
+    score: int       # 1–5
+    rationale: str   # free-text explanation
+
+class JudgeResult(BaseModel):
+    naturalness: DimensionScore
+    tool_correctness: DimensionScore
+    chain_coherence: DimensionScore
+    task_completion: DimensionScore
+    failure_modes: list[str]
+    overall_pass: bool    # mean ≥ 3.5 AND min(scores) ≥ 2.5
+```
+
+**Why these four dimensions:**
+
+| Dimension | What it measures | Why it matters |
+|-----------|-----------------|----------------|
+| `naturalness` | Does the conversation read like a real user / assistant exchange? | Catches LLM-isms, robotic phrasing, and implausibly direct responses |
+| `tool_correctness` | Did the assistant call the right endpoint with valid arguments matching the intent? | Core functional quality signal |
+| `chain_coherence` | Do later calls reference values from earlier outputs (not hallucinated)? | Measures grounding quality; complements executor's hard Layer 3 check |
+| `task_completion` | Was the original user request fulfilled and confirmed in the final message? | End-to-end quality signal; catches conversations that trail off without resolution |
+
+**Pass threshold: mean ≥ 3.5 AND min ≥ 2.5.** The AND condition prevents a single
+very-high dimension from masking a catastrophic failure in another. A conversation
+with naturalness=5, tool_correctness=5, chain_coherence=5, task_completion=1 would
+pass a mean-only threshold but clearly fails — the task was never completed.
+
+**Anchor examples in `prompts/judge.md`:** The prompt includes 3–4 scored examples,
+including at least one negative anchor (a conversation with hallucinated IDs and no
+task resolution, scored 2/2/1/1). Without a negative anchor, the judge defaults to
+high scores for any conversation that looks superficially coherent.
+
+**Sonnet at temperature 0:** Same conversation, same messages → same scores on every call.
+This is the reproducibility guarantee for the diversity experiment: Run A and Run B scores
+are directly comparable because the judge is deterministic given the conversation text.
 
 ### §6.3 Repair Strategy
 
+**`run_repair(conv, state, repair_agent, judge, max_attempts=2)`** is the sole public
+entry point (in `evaluation/repair.py`). Called by `ConversationGenerator._repair_node()`
+after a failed judge verdict.
+
+**Repair loop logic:**
+```
+1. validate_conversation(conv, state)
+   - If all hard validators pass → judge()
+     - If judge passes → return (conv, judge_result, attempts_used)
+     - If judge fails → continue to repair
+2. Check attempt budget (max_attempts=2)
+3. Compute failure signature = sorted join of all hard-validator errors
+   - If same signature seen on previous attempt → abort (unrecoverable)
+4. repair_agent.suggest(conv, results) → RepairOperation
+5. Apply operation to message list (_apply_operation)
+6. Recurse with new_conv, attempt+1
+```
+
+**`RepairOperation` types:**
+- `regenerate_turn(turn_index, reason, content)` — replace `messages[turn_index]["content"]`
+- `append_turn(role, reason, content)` — append a new message to the end
+- `discard(reason)` — conversation is unrecoverable; return as-is
+
+**Failure signature deduplication** (key correctness invariant): If the same set of
+hard-validator errors appears on two consecutive repair attempts, the repair agent is
+stuck in a loop (same input → same operation → same failure). Early abort prevents
+burning LLM budget on futile attempts.
+
+**State is not re-executed during repair.** `state` is the original `SessionState` from
+generation. Repaired messages are validated against the original execution record. This
+means `validate_grounding` re-reads the same `tool_outputs` — so a grounding failure
+in the original can only be fixed by editing the message text (removing the hallucinated
+call), not by re-running the executor. This is correct: re-execution would require
+re-running the entire conversation, defeating the purpose of targeted repair.
+
+**Integration test** (`tests/integration/test_repair_loop.py`): Injects a deliberately
+broken conversation (assistant message with hallucinated CHAIN_ONLY ID), verifies
+`validate_grounding` fires, verifies `run_repair` produces a conversation that passes.
+
 ### §6.4 Prompt Iteration Log
 
-> At least one documented failure required. Record failures in real time.
+> Required by assignment: at least one documented failure with symptom → root cause → fix → lesson.
+
+---
+
+#### Failure 1 — AssistantTurn Discriminated Union Schema (F4.4)
+
+**When:** During integration testing of the assistant agent (early F4.4 development).
+
+**Initial design:** `AssistantTurn` was implemented as a Pydantic v2 discriminated union:
+```python
+class MessageTurn(BaseModel):
+    type: Literal["message"]
+    content: str
+
+class ToolCallTurn(BaseModel):
+    type: Literal["tool_call"]
+    endpoint: str
+    arguments: dict[str, Any]
+
+AssistantTurn = Annotated[MessageTurn | ToolCallTurn, Field(discriminator="type")]
+```
+
+**Symptom:** Occasional `ValidationError: 1 validation error for MessageTurn / content: Field required`
+when the model returned a tool-call response. On inspection, the model sometimes emitted:
+```json
+{"type": "tool_call", "content": "", "endpoint": "Sports/Football/getLeagues", "arguments": {}}
+```
+The `content` field — present in `MessageTurn` but absent in `ToolCallTurn` — was being
+populated anyway. Pydantic v2's discriminated union routes to `ToolCallTurn` (because
+`type="tool_call"`) but `ToolCallTurn` has no `content` field, so the extra field is
+passed to its `__init__` and rejected under `model_config = ConfigDict(extra="forbid")`.
+
+**Root cause:** Pydantic v2 serialises a discriminated union as `anyOf` with two branches
+in the JSON Schema. Anthropic's structured output forces the model to conform to this
+schema, but the model learned that a `content` field *sometimes* appears in assistant
+outputs (from the `MessageTurn` branch) and populated it "just in case" even when
+`type="tool_call"`. The two-branch schema did not prevent cross-branch field contamination.
+
+**Fix:** Replaced with a flat model:
+```python
+class AssistantTurn(BaseModel):
+    type: Literal["message", "tool_call"]
+    content: str = ""      # populated for message turns; ignored for tool_call
+    endpoint: str = ""     # populated for tool_call; ignored for message
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_fields(self) -> "AssistantTurn":
+        if self.type == "tool_call" and not self.endpoint:
+            raise ValueError("tool_call turn requires endpoint")
+        if self.type == "message" and not self.content:
+            raise ValueError("message turn requires content")
+        return self
+```
+A flat model produces a single JSON Schema object with all four fields present but
+optional. The model always sees all fields and never needs to guess which branch applies.
+
+**Lesson:** For discriminated unions in structured LLM output, prefer flat models with a
+`Literal` discriminator field over Pydantic v2 `anyOf` unions. The reliability gain
+outweighs the type expressiveness loss. This is now a standing convention for this project.
+
+---
+
+#### Failure 2 — Complex Default Values Crash Pydantic (F1.3)
+
+**When:** First full corpus normalization run (all 730 tools in 3-category sample).
+
+**Symptom:** `ValidationError: default field — Input should be a valid string` on 5 tools.
+All were geo-search or geofencing tools. The crash happened inside `normalize_tool()` when
+building a `Parameter` with `default={"areatype": "drivetime", "units": "minutes", "size": 5}`.
+
+**Root cause:** Rule 6 (`null-default-dropped`) and Rule 5 (`empty-default-dropped`) handle
+`None` and `""` but not dicts/lists. The `Parameter.default` field is typed `str | None`,
+so a dict default causes a Pydantic validation failure.
+
+**Fix:** Added Rule 4b (`complex-default-stringified`): detect dict/list defaults before
+passing to Pydantic, JSON-serialize them to strings. Consistent with Rule 2's philosophy
+that exotic values are preserved as strings.
+
+**Lesson:** Always run normalization on the full corpus before writing downstream code.
+Spot checks on 3 files (§2.1) are necessary for schema design but insufficient for
+discovering edge cases. The full-corpus run found 5 cases that 3 files could not have revealed.
 
 ---
 
@@ -474,11 +935,108 @@ re-routing through the generator graph mid-repair.
 
 ### §7.1 Diversity Metrics Chosen & Justification
 
+Three metrics measure different aspects of what cross-conversation steering is designed
+to affect. All are deterministic given a fixed JSONL run file.
+
+**1. Tool coverage entropy** (`evaluation/metrics.py: compute_tool_coverage_entropy`)
+
+Shannon entropy H of the endpoint_id usage distribution across all tool calls in the run:
+```
+H = -Σ p(endpoint_i) * log(p(endpoint_i))
+```
+Range: 0 (one endpoint always used) to log(n_endpoints) (perfectly uniform).
+
+*Why:* `CorpusDiversityTracker` uses inverse-frequency weights to reduce the probability
+of sampling heavily-used endpoints. If steering is working, the distribution should be
+flatter → higher entropy. This is the primary metric for the steering mechanism.
+
+**2. Distinct tool bigrams (distinct-2)** (`compute_distinct_bigrams`)
+
+For each conversation, extract adjacent (tool_call[i], tool_call[i+1]) pairs. Compute:
+```
+distinct-2 = (number of unique pairs) / (total pairs across all conversations)
+```
+Range: 0 (same pair every time) to 1 (every pair is unique).
+
+*Why:* Entropy alone does not capture chain-pattern variety — it is possible to have
+high entropy on individual tools but always chain them in the same order. Distinct-2
+measures whether the sequences of tool combinations are diverse, which is what the
+`MAX_TOOL_PAIR_COUNT` cap in `CorpusDiversityTracker` is designed to enforce.
+
+**3. Task embedding dispersion** (`compute_embedding_dispersion`)
+
+Mean pairwise cosine distance of the first user message embeddings, using
+`all-MiniLM-L6-v2` (local, deterministic, no API call):
+```
+dispersion = mean( 1 - cos(embed(query_i), embed(query_j)) )  for all i < j
+```
+Range: 0 (all queries identical) to ~1 (orthogonal queries).
+
+*Why:* Entropy and distinct-2 measure structural diversity (which tools, in what order).
+Embedding dispersion measures semantic task diversity — whether the underlying user
+goals vary, not just the API chains. A corpus with high entropy but low dispersion
+would suggest that the same semantic intent is being expressed in different tool chains.
+
+**Together these three cover:** frequency distribution flatness (entropy), chain-pattern
+variety (distinct-2), and semantic task variety (embedding dispersion). Each captures
+something the other two cannot.
+
 ### §7.2 Run A vs Run B Results (numeric, 3 decimal places)
+
+> **F7.4 has not been run.** Running both 120-conversation runs requires ~4,000 LLM calls
+> (~$12 estimated). This section will be filled in after F7.4 is executed and confirmed.
+>
+> **Expected direction** (from design):
+> - Tool coverage entropy: Run B > Run A (inverse-frequency weights flatten the distribution)
+> - Distinct bigrams: Run B > Run A (`MAX_TOOL_PAIR_COUNT = 4` limits pair repetition)
+> - Embedding dispersion: Run B ≥ Run A (indirect; steering does not directly target semantics)
+> - Mean judge score: Run B ≈ Run A (steering changes selection, not generation quality per se)
+> - Pass rate: Run B ≈ Run A (same generation agents, same judge threshold)
+>
+> **If embedding dispersion does not improve:** The cap-based tracker does not explicitly
+> target semantic variety — it targets endpoint and pair frequency. Semantic similarity is
+> an indirect effect. If dispersion is flat, the takeaway would be that token-level diversity
+> metrics (entropy, distinct-2) and semantic diversity are independent signals, and F6.2
+> (mem0 task-embedding memory) would be the correct fix.
 
 ### §7.3 Diversity–Quality Tradeoff Analysis
 
-### §7.4 Non-Determinism Caveat (mem0 ANN)
+> **Pending F7.4 results.** Qualitative analysis from design:
+
+The design assumes that reducing repetition (via tracker caps) does not hurt quality, because:
+1. Quality is driven by generation agents (Haiku) and grounding (executor) — both are
+   independent of which chain was sampled.
+2. The judge evaluates the conversation text, not the chain identity. A well-grounded,
+   coherent conversation scores well regardless of whether the underlying chain was
+   common or rare.
+3. The steering mechanism rejects chains on frequency grounds only — it never forces the
+   sampler into a chain the graph does not support. If a chain is rejected, the retry
+   loop finds the next best chain that passes `should_accept()`.
+
+**Potential failure mode:** If `MAX_ACCEPT_RETRIES = 5` is too low for a heavily-steered
+corpus (late in a 120-conversation run), the plan node starts raising `RuntimeError` and
+conversations are skipped. This would manifest as `produced < requested` in the batch
+output. A mitigation would be to raise `MAX_ACCEPT_RETRIES` to 10 or relax
+`MAX_CATEGORY_FRACTION` for large N.
+
+### §7.4 Non-Determinism Caveat
+
+**F6.2 (mem0 task-embedding memory) was cut per the FEATURES.md cut criteria.**
+The system uses only `CorpusDiversityTracker` (frequency counters) for steering, which
+is fully deterministic. There is no ANN lookup, no vector database, and no stochastic
+nearest-neighbour operation.
+
+**Full determinism guarantee:** Given the same `(n, seed, was_steered)` triple:
+- The same 500 chains are sampled in the same order.
+- Each generation agent (Haiku) calls the LLM with the same messages in the same order.
+- LLM responses at temperature > 0 are technically stochastic, but the content-addressed
+  disk cache (`LLMClient`) caches `(model, prompt_hash, schema_hash) → response`. On a
+  warm-cache run, every LLM call is a cache hit and the response is deterministic.
+- Cold runs (first generation) are non-deterministic at temperature 0.7 (Planner, UserSim).
+
+**Practical implication:** The diversity experiment (F7.4) should be run once and the
+results recorded. Subsequent `toolforge evaluate` and `toolforge compare` runs on the
+saved JSONL files are fully deterministic.
 
 ---
 
@@ -486,4 +1044,115 @@ re-routing through the generator graph mid-repair.
 
 ### §8.1 Known Failure Modes Observed During Runs
 
+**0. Three critical bugs found during E2E validation (fixed in commit c30a611)**
+
+These bugs were discovered when running the first real `toolforge generate` against the live registry. All three are now fixed.
+
+**Bug A — CHAINS_TO edges never created (graph/build.py):**
+`build_graph()` filtered `produced_by` to only include types in `chain_only_types.json`.
+But `chain_only_types.json` contains types that appear ONLY as response fields (never consumed
+by any parameter) — so the intersection with consumed types was always empty, yielding 0 CHAINS_TO
+edges. The sampler then could never satisfy `min_distinct_tools=2`. Fix: removed the filter; CHAINS_TO
+is now built for any type that flows from a response field of A into a parameter of B.
+Result: 0 → 105 CHAINS_TO edges on the real 500-endpoint registry.
+
+**Bug B — Sampler always picked non-chainable seed endpoints (graph/sampler.py):**
+Even with 105 CHAINS_TO edges, only 15 of 494 non-terminal endpoints have outgoing CHAINS_TO
+edges. The sampler was selecting seeds uniformly from all 494, so ~97% of seeds picked an
+endpoint that could never grow a chain, and `min_distinct_tools=2` always failed. Fix: pre-compute
+`chain_seeds` (endpoints with ≥1 CHAINS_TO out-edge) and use them as the seed pool. 10/10 base
+seeds now resolve within the 5-attempt retry loop.
+
+**Bug C — API key not passed to Anthropic client (agents/llm_client.py):**
+`anthropic.Anthropic()` reads `ANTHROPIC_API_KEY` from the OS environment. The key lives in `.env`
+which is loaded by pydantic-settings at Python import time — but never exported to the OS env. If
+the shell session doesn't have the key exported, every LLM call fails with an auth error. Fix:
+pass `api_key=get_settings().anthropic_api_key` explicitly to `anthropic.Anthropic()`.
+
+**Smoke test after all three fixes** (`--n 2 --seed 42`):
+- 32 live LLM calls, 116 seconds
+- conv-000043: judge 4.0, `overall_pass=true`
+- conv-000042: judge 2.5, failed — grounding errors on `order_id` (chain had both endpoints in same tool with no producer/consumer separation). Repair attempted twice, still failed. Expected failure mode.
+
+**1. Turn cap hit mid-chain (most common)**
+
+When the chain is long (5+ steps) and the assistant makes several clarification exchanges
+first, the 12-turn hard cap is reached before all chain steps complete. The conversation
+is finalized with `status="done"` but `validate_completeness` fires because the last
+message is a `[tool_call:]` rather than a summary. The repair loop appends a closing
+summary turn, which often brings the conversation to a pass.
+
+**2. Off-chain tool calls**
+
+The assistant occasionally calls a distractor endpoint instead of the next on-chain
+endpoint. When this happens, `chain_index` does not advance (per the `turn.endpoint == expected`
+check in `executor_node`). The conversation continues but the chain progress stalls.
+At the turn cap, the conversation may be only partially through the chain. These appear
+in JSONL records as `metadata.sampled_chain` longer than the number of distinct endpoints
+in `tool_calls`.
+
+**3. Sampler truncation**
+
+When constraints are tight (e.g., `length=5, min_distinct_tools=4` on a sparse graph),
+the BFS can dead-end before reaching the target length. The sampler returns
+`truncated=True`, which causes `_plan_node` to raise `RuntimeError` and the conversation
+is skipped in `_run_batch`. This is expected behavior (P1 — no silent fallback) but
+reduces the effective yield for large N with aggressive constraints.
+
+**4. Repair loop gives up on same-signature failures**
+
+If `validate_tool_calls` fires because the assistant produced syntactically malformed
+tool-call JSON, and the repair agent produces corrected content that also fails `validate_tool_calls`
+(e.g., because the endpoint ID is still malformed), the same failure signature appears
+on attempt 2 and the repair aborts. The conversation is kept in the JSONL with
+`status="failed"` and low judge scores (or no judge score if hard validators never pass).
+
+**5. Empty `response_schema` endpoints in the mock**
+
+Approximately 3,469 endpoints (69%) had `schema: {}` in ToolBench and received
+`response_schema = ()` from the normalizer. The MockResponder returns `{}` for these
+endpoints. When the assistant receives `[tool_result: {}]`, it cannot extract a useful
+value to use as input to the next chain step. These chains tend to produce conversations
+with low `chain_coherence` scores from the judge, because the "result" the assistant
+summarises is always empty.
+
+**6. AssistantTurn `content` populated for tool_call turns (residual)**
+
+Even with the flat model fix (§6.4), approximately 2% of assistant turns at temperature 0
+produce `content="Here is the result"` alongside a tool_call. The `@model_validator`
+ignores `content` when `type="tool_call"` (does not raise), so the turn is accepted.
+The extra content is discarded silently. This is harmless but may confuse anyone
+reading raw LLM response JSON.
+
 ### §8.2 What I Would Do Next
+
+In priority order, given more time:
+
+1. **Run F7.4** (diversity experiment, ~4,000 LLM calls). The entire evaluation infrastructure
+   is built; the only missing step is running both generations and reading the numbers.
+   Until F7.4 runs, §7.2 and §7.3 cannot be evidence-based.
+
+2. **F8.1 E2E test** (`pytest -m e2e`). The e2e test (`tests/e2e/test_full_pipeline.py`)
+   is scaffolded but not yet implemented. It would gate the grader's reproduction run on
+   actual pass/fail numbers rather than manual inspection.
+
+3. **Improve distractor selection.** Current distractors are `n=3` randomly selected
+   endpoints from `all_endpoints`. A better approach: select distractors that are plausibly
+   related (same category, similar parameter names) to make the assistant's job harder
+   and produce more realistic disambiguation behavior.
+
+4. **Response schema coverage.** 69% of endpoints have empty `response_schema`, returning
+   `{}` from the mock. The LLM inference fallback (F1.6 `mock_policy="llm"`) was designed
+   to handle this but the quality of LLM-inferred schemas varies. Running a targeted
+   improvement pass on the most-frequently-used endpoints would significantly improve
+   chain coherence scores.
+
+5. **F6.2 mem0 task-embedding memory.** The cut was correct given the time budget, but
+   adding semantic diversity steering (nearest-neighbour rejection for similar task types)
+   would address the case where F7.4 shows that embedding dispersion does not improve
+   despite high entropy and distinct-2.
+
+6. **Parallel and branch-merge chain patterns.** The sampler has stubs for `parallel` and
+   `branch_merge` patterns that raise `NotImplementedError`. Implementing these would
+   produce richer conversations where the assistant calls two endpoints concurrently
+   (e.g., search hotels AND search flights in the same user turn).

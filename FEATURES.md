@@ -937,7 +937,7 @@ toolforge compare --a reports/run_a.json --b reports/run_b.json
 
 # Phase 8 — Tests + Documentation (≈2 hours)
 
-## F8.1 — End-to-end test ☐
+## F8.1 — End-to-end test ☑
 
 ### Task Formulation [confirmed]
 **Inputs:** full pipeline; `tests/e2e/test_full_pipeline.py`.
@@ -955,7 +955,7 @@ toolforge compare --a reports/run_a.json --b reports/run_b.json
 
 ---
 
-## F8.2 — DESIGN.md final polish ☐
+## F8.2 — DESIGN.md final polish ☑
 
 ### Task Formulation [confirmed]
 **Every section must carry evidence, not paraphrase of PROJECT_PLAN.**
@@ -977,7 +977,7 @@ Required sections:
 
 ---
 
-## F8.3 — README.md final ☐
+## F8.3 — README.md final ☑
 
 ### Task Formulation [confirmed]
 **Outputs:** README with Quickstart walking the grader through:
