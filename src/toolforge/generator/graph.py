@@ -176,11 +176,15 @@ class ConversationGenerator:
                 seed=base_seed + attempt,
                 steering=steering or None,
             )
-            if candidate.truncated:
-                raise RuntimeError(
-                    f"ChainSampler failed: {candidate.failure_reason.value}. "
-                    "No hardcoded-chain fallback exists — fix constraints or graph."
-                )
+            if candidate.truncated and not candidate.endpoint_ids:
+                # Hard failure: no valid chain found at all (unsatisfiable constraint).
+                # Continue to next attempt with incremented seed.
+                last_reject_reason = candidate.failure_reason.value
+                continue
+            if candidate.truncated and candidate.endpoint_ids:
+                # Soft truncation: valid chain but shorter than requested target length.
+                # Accept it — a 2-hop chain is better than no chain.
+                pass
             accepted, last_reject_reason = self._tracker.should_accept(
                 candidate.endpoint_ids
             )
@@ -201,8 +205,8 @@ class ConversationGenerator:
 
         if result is None:
             raise RuntimeError(
-                f"Diversity tracker rejected all {MAX_ACCEPT_RETRIES} chain "
-                f"candidates (last reason: {last_reject_reason}). "
+                f"ChainSampler failed: all {MAX_ACCEPT_RETRIES} candidate chains were "
+                f"unsatisfiable or rejected by diversity tracker (last reason: {last_reject_reason}). "
                 "Loosen caps or increase MAX_ACCEPT_RETRIES."
             )
 

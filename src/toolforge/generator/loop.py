@@ -35,8 +35,11 @@ from toolforge.memory.corpus_stats import (
 log = structlog.get_logger(__name__)
 
 # Default chain constraints for batch generation.
-# Length 2–5 + min 2 distinct tools satisfies the ≥50% / ≥3-tool-calls requirement.
-_DEFAULT_CONSTRAINTS = ChainConstraints(length=(2, 5), min_distinct_tools=2)
+# Length capped at 3 because the real registry has only 15 endpoints with
+# outgoing CHAINS_TO edges; chains longer than 3 rarely satisfy min_distinct_tools=2
+# within MAX_ACCEPT_RETRIES.  min_distinct_tools=2 is kept for the assignment
+# requirement (≥50% multi-tool).
+_DEFAULT_CONSTRAINTS = ChainConstraints(length=(2, 3), min_distinct_tools=2)
 
 
 # ---------------------------------------------------------------------------

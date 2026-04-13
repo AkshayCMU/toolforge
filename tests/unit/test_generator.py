@@ -486,7 +486,7 @@ def test_sampler_dependency_enforced() -> None:
             generator=gen,
         )
 
-    mock_sampler.sample.assert_called_once()   # sampler was called
+    assert mock_sampler.sample.call_count >= 1  # sampler was called (retried up to MAX_ACCEPT_RETRIES)
     mock_planner.plan.assert_not_called()       # no hardcoded-chain fallback reached planner
 
 
