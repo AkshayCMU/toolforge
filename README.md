@@ -256,7 +256,10 @@ python -m pytest tests/unit tests/integration -q
 python -m pytest tests/unit/test_metrics.py -v
 ```
 
-> Note: An e2e test suite (`pytest -m e2e`) is not yet implemented (F8.1 pending).
+> The e2e test (`pytest -m e2e`) is fully implemented in `tests/e2e/test_full_pipeline.py`.
+> It generates 100 conversations and asserts mean judge ≥ 3.5, ≥50% multi-step+multi-tool,
+> ≥20% disambiguation. Requires a warm cache (run `toolforge build` first); cold run
+> makes ~1,700 LLM calls.
 
 ---
 
