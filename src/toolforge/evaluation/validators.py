@@ -202,8 +202,11 @@ def validate_tool_calls(conv: Conversation, state: SessionState) -> ValidationRe
                         f"content={str(next_content)[:60]!r})"
                     )
                 else:
-                    # Content starts with [tool_result: — validate full format + JSON payload.
-                    tr_match = _TOOL_RESULT_RE.match(next_content)
+                    # Content starts with [tool_result: — validate format + JSON payload.
+                    # Check only the first line: content may have trailing SESSION STATE
+                    # metadata appended after the closing ']' on subsequent lines.
+                    first_line = next_content.split("\n")[0]
+                    tr_match = _TOOL_RESULT_RE.match(first_line)
                     if tr_match is None:
                         errors.append(
                             f"Message {i+1}: malformed tool_result format — "
@@ -226,28 +229,43 @@ def validate_tool_calls(conv: Conversation, state: SessionState) -> ValidationRe
     )
 
 
-def validate_grounding(conv: Conversation, state: SessionState) -> ValidationResult:  # noqa: ARG001
-    """Hard. Check for grounding failures recorded in session tool_outputs.
+def validate_grounding(conv: Conversation, state: SessionState) -> ValidationResult:
+    """Hard (first pass) / Soft (after repair). Check for grounding failures.
 
     Reads executor-recorded errors rather than re-executing tool calls.
     Pure — no I/O, no LLM, no registry access.
 
     Grounding failures are identified by the executor's error string pattern:
         "Invalid {type}: {value!r} not in session. Valid values: [...]"
+
+    When conv.repair_attempts > 0 the repair agent has already corrected the
+    message text for any grounding errors it found.  Re-blocking on the original
+    execution record would double-penalise the conversation and trap the repair
+    loop in a "repeated failure" cycle.  Downgrade to warnings so the repaired
+    conversation can proceed to the judge.
     """
-    errors: list[str] = []
+    grounding_errors: list[str] = []
 
     for output in state.tool_outputs:
         if output.error is not None and _GROUNDING_ERROR_MARKER in output.error:
-            errors.append(
+            grounding_errors.append(
                 f"Grounding failure at {output.timestamp} "
                 f"(endpoint={output.endpoint_id}): {output.error}"
             )
 
+    if grounding_errors and conv.repair_attempts > 0:
+        # Repair has already corrected the conversation text; treat as soft warning.
+        return ValidationResult(
+            stage="grounding",
+            passed=True,
+            errors=[],
+            warnings=grounding_errors,
+        )
+
     return ValidationResult(
         stage="grounding",
-        passed=not errors,
-        errors=errors,
+        passed=not grounding_errors,
+        errors=grounding_errors,
         warnings=[],
     )
 

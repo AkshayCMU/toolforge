@@ -33,6 +33,11 @@ def build(
     target_endpoints: int = typer.Option(
         500, "--target-endpoints", help="Target endpoint count for the subset."
     ),
+    categories: Optional[str] = typer.Option(
+        None,
+        "--categories",
+        help="Comma-separated list of categories to include (e.g. 'Sports,Travel'). Defaults to all.",
+    ),
 ) -> None:
     """Run the Phase 1 build pipeline and write all registry artifacts."""
     from toolforge.registry.pipeline import build_registry, save_artifacts
@@ -41,25 +46,25 @@ def build(
     settings = get_settings()
 
     resolved_data_dir = data_dir or settings.toolbench_data_dir
-    if examples_dir is None:
-        typer.echo(
-            "Error: --examples-dir is required (no default configured).", err=True
-        )
-        raise typer.Exit(1)
+    resolved_examples_dir = examples_dir or settings.toolbench_examples_dir
+    category_filter = [c.strip() for c in categories.split(",")] if categories else None
 
     typer.echo(f"Building from: {resolved_data_dir}")
-    typer.echo(f"Examples dir:  {examples_dir}")
+    typer.echo(f"Examples dir:  {resolved_examples_dir}")
     typer.echo(f"Artifacts dir: {settings.artifacts_dir}")
+    if category_filter:
+        typer.echo(f"Categories:    {', '.join(category_filter)}")
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     result = build_registry(
         data_dir=resolved_data_dir,
-        examples_dir=examples_dir,
+        examples_dir=resolved_examples_dir,
         cache_dir=settings.cache_dir,
         client=client,
         seed=seed,
         target_endpoints=target_endpoints,
+        categories=category_filter,
     )
 
     save_artifacts(result, settings.artifacts_dir)

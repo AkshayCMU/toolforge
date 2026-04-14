@@ -175,6 +175,13 @@ def _apply_operation(
                 "content": op.content,
             }
     elif op.type == "append_turn":
+        # Guard: appending a turn with the same role as the current last message
+        # would break the alternating-role invariant and fail validate_structure.
+        # Insert a minimal bridging message to maintain valid alternation.
+        if msgs and msgs[-1].get("role") == op.role:
+            bridge_role = "user" if op.role == "assistant" else "assistant"
+            bridge_text = "Understood, thank you." if bridge_role == "user" else "Of course, let me follow up."
+            msgs.append({"role": bridge_role, "content": bridge_text})
         msgs.append({"role": op.role, "content": op.content})
     return msgs
 

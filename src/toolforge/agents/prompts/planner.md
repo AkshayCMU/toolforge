@@ -37,6 +37,38 @@ format or an account ID), omit it.
 - The user persona should be grounded and specific (e.g., "a hotel manager checking room
   availability" rather than "a user").
 
+## Destructive actions (delete, remove, cancel, revoke, deactivate)
+
+If **any** endpoint in the chain is a destructive operation (its name or
+description contains delete, remove, cancel, revoke, deactivate, or purge):
+
+- Set `private_user_knowledge` to `{}` — leave nothing withheld.
+- Write `initial_query` as a pre-committed statement of intent that includes
+  all identifiers the user would know (e.g. "Please delete client account
+  ID 4821 from our system" rather than "I need to delete something").
+- Set `clarification_points` to `[]`.
+
+Rationale: a user who initiates a delete operation has already decided to act.
+Withholding any field causes the assistant to ask clarifying questions
+indefinitely because the user simulator will not volunteer the information
+until asked — but the assistant cannot know what to ask for.
+
+## Technical / simulation / IoT / device endpoints
+
+If the chain involves technical API operations (simulation, IoT, geolocation,
+device management, data ingestion, or any endpoint whose parameters are
+machine-generated values like coordinates, UUIDs, sensor configs, or
+API-specific identifiers):
+
+- Set `private_user_knowledge` to `{}` — leave nothing withheld.
+- Include all required parameters directly in `initial_query`.
+- Set `clarification_points` to `[]`.
+
+Rationale: users interacting with technical APIs already have the required
+values (coordinates, device IDs, config parameters). Withholding these causes
+an infinite clarification loop because the assistant cannot guess what
+technical value to ask for.
+
 ## Tool chain context
 
 You will be given a numbered list of API calls that must happen in this conversation.

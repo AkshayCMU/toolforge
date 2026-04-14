@@ -87,7 +87,7 @@ class Planner(Agent):
             self.system_prompt,
             user_prompt,
             TaskPlan,
-            prompt_version="v1",
+            prompt_version="v2",  # bumped: destructive+technical endpoint rules added
             agent_name=self.name,
         )
 

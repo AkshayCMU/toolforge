@@ -18,11 +18,13 @@ Model: claude-haiku-4-5-20251001, temperature=0.0.
 
 from __future__ import annotations
 
+import json as _json
+import re
 import random
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from toolforge.agents.base import Agent
 from toolforge.agents.llm_client import LLMClient
@@ -51,6 +53,41 @@ class AssistantTurn(BaseModel):
     content: str = ""
     endpoint: str = ""
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def _coerce_arguments(cls, v: Any) -> Any:
+        """Coerce a JSON-encoded string to a dict.
+
+        The LLM occasionally double-encodes the arguments field as a JSON
+        string instead of an object.  Two cases handled:
+        1. Valid JSON string  → parse directly.
+        2. JSON with unquoted scalar values (e.g. unquoted UUIDs) → quote
+           any value that looks like an identifier/UUID and retry.
+        """
+        if not isinstance(v, str):
+            return v
+        # Case 1: valid JSON.
+        try:
+            parsed = _json.loads(v)
+            if isinstance(parsed, dict):
+                return parsed
+        except (_json.JSONDecodeError, ValueError):
+            pass
+        # Case 2: quote bare values after ':' that are not already quoted,
+        # null, true, false, or a number.  Handles unquoted UUIDs and plain words.
+        try:
+            fixed = re.sub(
+                r':\s*([^\s\[\]{},"\'\d][^\s,\[\]{}]*)',
+                lambda m: f': "{m.group(1)}"',
+                v,
+            )
+            parsed = _json.loads(fixed)
+            if isinstance(parsed, dict):
+                return parsed
+        except (_json.JSONDecodeError, ValueError):
+            pass
+        return v
 
     @model_validator(mode="after")
     def _validate_fields(self) -> "AssistantTurn":
@@ -96,7 +133,7 @@ class Assistant(Agent):
             system_prompt,
             user_prompt,
             AssistantTurn,
-            prompt_version="v1",
+            prompt_version="v3",  # bumped: add "proceed to next step" mid-chain rule
             agent_name=self.name,
         )
 

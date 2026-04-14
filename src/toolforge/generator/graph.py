@@ -293,7 +293,35 @@ class ConversationGenerator:
         output = self._executor.execute(turn.endpoint, turn.arguments, state["session_state"])
 
         result_payload: dict[str, Any] = output.response if output.response is not None else {"error": output.error}
-        result_content = f"[tool_result: {json.dumps(result_payload, ensure_ascii=False)}]"
+        base_result = f"[tool_result: {json.dumps(result_payload, ensure_ascii=False)}]"
+
+        # On success, append an explicit SESSION STATE block so the LLM sees
+        # produced CHAIN_ONLY values immediately before its next turn.
+        # Haiku reliably ignores values buried inside JSON payloads; a
+        # top-level block with exact key=value pairs eliminates hallucination
+        # of IDs that were already returned.
+        if output.error is None:
+            chain_only_vals = {
+                sem_type: vals
+                for sem_type, vals in state["session_state"].available_values_by_type.items()
+                if vals
+            }
+            if chain_only_vals:
+                lines = [
+                    "",
+                    "---",
+                    "SESSION STATE (use these exact values in subsequent calls):",
+                ]
+                for sem_type, vals in sorted(chain_only_vals.items()):
+                    for val in vals:
+                        lines.append(f"  {sem_type}: {val}")
+                lines.append("---")
+                result_content = base_result + "\n".join(lines)
+            else:
+                result_content = base_result
+        else:
+            result_content = base_result
+
         new_messages = list(state["messages"]) + [
             {"role": "user", "content": result_content}
         ]
@@ -380,6 +408,11 @@ class ConversationGenerator:
             repair_agent=self._repair_agent,
             judge=self._judge,
         )
+        # run_repair returns None when _attempt > max_attempts fires at the entry
+        # guard (no judging reached in that call frame). Fall back to the
+        # pre-repair judge result from _judge_node so judge_scores is never {}.
+        if judge_result is None:
+            judge_result = state["judge_result"]
 
         new_status = "done" if (judge_result is not None and judge_result.overall_pass) else "failed"
         log.info(

@@ -94,6 +94,16 @@ def build_graph(tools: list[Tool], chain_only_types: list[str]) -> nx.MultiDiGra
             has_typed_param = any(p.semantic_type for p in ep.parameters)
             has_typed_field = any(f.semantic_type for f in ep.response_schema)
             terminal = not has_typed_param and not has_typed_field
+            # Collect the set of REQUIRED CHAIN_ONLY semantic types for this endpoint.
+            # The sampler uses this list to:
+            #   (a) exclude endpoints with any entry from chain seeds (position 0),
+            #   (b) only place an endpoint at position N when ALL its required
+            #       CHAIN_ONLY types are in the set produced by positions 0..N-1.
+            required_chain_only_types: list[str] = sorted({
+                p.semantic_type
+                for p in ep.parameters
+                if p.required and p.semantic_type and p.semantic_type in chain_only_set
+            })
 
             G.add_node(
                 _ep_id(ep.id),
@@ -102,6 +112,8 @@ def build_graph(tools: list[Tool], chain_only_types: list[str]) -> nx.MultiDiGra
                 tool=tool.name,
                 category=tool.category,
                 terminal=terminal,
+                requires_chain_only=bool(required_chain_only_types),
+                required_chain_only_types=required_chain_only_types,
             )
 
     # ------------------------------------------------------------------

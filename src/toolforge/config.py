@@ -28,7 +28,11 @@ class Settings(BaseSettings):
     # Paths — all resolved relative to CWD at access time
     toolbench_data_dir: Path = Field(
         default=Path("../toolbench_raw/data/data/toolenv/tools"),
-        description="Root of raw ToolBench tool JSON files.",
+        description="Root of ToolBench tool JSON files.",
+    )
+    toolbench_examples_dir: Path = Field(
+        default=Path("../toolbench_raw/data/data/toolenv/response_examples"),
+        description="Root of ToolBench response_examples files.",
     )
     cache_dir: Path = Field(default=Path(".cache/"), description="LLM response cache.")
     artifacts_dir: Path = Field(

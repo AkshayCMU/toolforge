@@ -37,7 +37,7 @@ log = structlog.get_logger(__name__)
 
 # Maximum retries when should_accept rejects a sampled chain.
 # Used by plan_node; defined here so both sides share one constant.
-MAX_ACCEPT_RETRIES: int = 5
+MAX_ACCEPT_RETRIES: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -111,16 +111,21 @@ class CorpusDiversityTracker:
 
     Must be updated via ``update()`` after each *accepted* conversation.
 
-    Hard caps are tuned for N≈120 conversations.  At 120 conversations with
-    ~500 endpoints and ~40 categories:
-    - ``MAX_ENDPOINT_COUNT=8``  → any endpoint in at most ~6.7 % of convs.
-    - ``MAX_CATEGORY_FRACTION=0.15`` → any category covers at most ~18 convs.
-    - ``MAX_TOOL_PAIR_COUNT=4`` → any (tool_a, tool_b) co-occurrence capped at 4.
+    Hard caps re-calibrated for N≈100 conversations with 68 valid chain seeds
+    across 8 categories (~8.5 seeds/category).  Original caps were tuned for
+    N=120 / 500 endpoints / 40 categories and caused >50% skip rate on the
+    smaller 8-category corpus.
+
+    At 100 conversations with 68 seeds across 8 categories:
+    - ``MAX_ENDPOINT_COUNT=15`` → any endpoint in at most 15 % of convs.
+    - ``MAX_CATEGORY_FRACTION=0.30`` → any category covers at most ~30 convs
+       (3.5 convs/seed on average — acceptable given only 8 categories).
+    - ``MAX_TOOL_PAIR_COUNT=8`` → allows more pair reuse given the small pool.
     """
 
-    MAX_ENDPOINT_COUNT: int = 8
-    MAX_CATEGORY_FRACTION: float = 0.15
-    MAX_TOOL_PAIR_COUNT: int = 4
+    MAX_ENDPOINT_COUNT: int = 15
+    MAX_CATEGORY_FRACTION: float = 0.30
+    MAX_TOOL_PAIR_COUNT: int = 8
 
     def __init__(self, endpoint_meta: dict[str, dict[str, str]]) -> None:
         """

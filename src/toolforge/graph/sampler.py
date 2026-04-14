@@ -99,6 +99,23 @@ class ChainSampler:
             if data.get("node_type") == "endpoint" and not data.get("terminal", False)
         )
 
+        # Cached attribute dicts for O(1) lookup during sampling.
+        # Built first — referenced by _chain_seeds filter below.
+        self._ep_attrs: dict[str, dict] = {
+            nid: dict(graph.nodes[nid]) for nid in self._endpoints
+        }
+
+        # Pre-compute PRODUCES sets — also needed by _chain_seeds quality filter.
+        self._ep_produces: dict[str, frozenset[str]] = {}
+        for nid in self._endpoints:
+            produced: set[str] = set()
+            for _, target, edge_data in graph.out_edges(nid, data=True):
+                if edge_data.get("edge_type") == "PRODUCES":
+                    st_name = graph.nodes[target].get("name", "")
+                    if st_name:
+                        produced.add(st_name)
+            self._ep_produces[nid] = frozenset(produced)
+
         # Subset of endpoints that have ≥1 outgoing CHAINS_TO edge.
         # These are the only valid chain seeds — an endpoint with no CHAINS_TO
         # out-edges can never grow a chain past length 1.
@@ -107,21 +124,67 @@ class ChainSampler:
             for u, v, d in graph.edges(data=True)
             if d.get("edge_type") == "CHAINS_TO"
         }
-        self._chain_seeds: list[str] = sorted(
-            ep for ep in self._endpoints if ep in _chains_to_sources
-        )
+        # Seeds must also NOT require a CHAIN_ONLY input at position 0.
+        # An endpoint like deleteClient(client_id=REQUIRED) has a CHAINS_TO
+        # out-edge (it produces client_id) but cannot be a chain start because
+        # nothing has produced client_id yet.  Endpoints flagged
+        # requires_chain_only=True are valid at position ≥1 only.
+        #
+        # Quality filter: a seed must have ≥40 % of its CHAINS_TO successors
+        # be "clean" (all of the successor's required_chain_only_types are
+        # in the seed's produced set) AND at least 2 clean successors.
+        # Seeds that fail this threshold produce primarily false-edge chains —
+        # the graph has a CHAINS_TO edge but the downstream endpoint requires
+        # additional CHAIN_ONLY types the seed never provides, causing runtime
+        # grounding failures on the second call.
+        def _count_clean_successors(
+            ep_node: str, produced: frozenset[str], same_cat_only: bool = False
+        ) -> tuple[int, int]:
+            """Return (clean, total) CHAINS_TO successor counts.
+
+            If same_cat_only=True, only count successors in the same category
+            as ep_node (prevents cross-domain chains via generic types like
+            user_id connecting unrelated APIs).
+            """
+            seed_cat = self._ep_attrs.get(ep_node, {}).get("category", "")
+            clean = total = 0
+            for _, tgt, d in graph.out_edges(ep_node, data=True):
+                if d.get("edge_type") != "CHAINS_TO":
+                    continue
+                if same_cat_only:
+                    tgt_cat = self._ep_attrs.get(tgt, {}).get("category", "")
+                    if tgt_cat != seed_cat:
+                        continue
+                total += 1
+                req = set(self._ep_attrs.get(tgt, {}).get("required_chain_only_types", []))
+                if req.issubset(produced):
+                    clean += 1
+            return clean, total
+
+        quality_seeds: list[str] = []
+        for ep in self._endpoints:
+            if ep not in _chains_to_sources:
+                continue
+            if self._ep_attrs[ep].get("requires_chain_only", False):
+                continue
+            produced = self._ep_produces.get(ep, frozenset())
+            # Primary check: ≥2 clean same-category successors (prevents cross-domain
+            # false chains via generic types like user_id).
+            same_cat_clean, same_cat_total = _count_clean_successors(ep, produced, same_cat_only=True)
+            # Fallback: accept if there are enough high-quality cross-category chains too.
+            all_clean, all_total = _count_clean_successors(ep, produced, same_cat_only=False)
+            all_pct = all_clean / all_total if all_total else 0
+            if same_cat_clean >= 2 or (all_clean >= 4 and all_pct >= 0.60):
+                quality_seeds.append(ep)
+        self._chain_seeds: list[str] = sorted(quality_seeds)
 
         # Map category → sorted list of (non-terminal) endpoint node IDs.
         self._ep_by_category: dict[str, list[str]] = {}
         for nid in self._endpoints:
             cat = graph.nodes[nid].get("category", "")
             self._ep_by_category.setdefault(cat, []).append(nid)
-        # Lists are already sorted because self._endpoints is sorted.
 
-        # Cached attribute dicts for O(1) lookup during sampling.
-        self._ep_attrs: dict[str, dict] = {
-            nid: dict(graph.nodes[nid]) for nid in self._endpoints
-        }
+        # (_ep_produces is built above before _chain_seeds — see earlier block)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -210,8 +273,10 @@ class ChainSampler:
             )
 
         # Step 4 + 5: extend chain via CHAINS_TO, with one backtrack on dead-end.
+        # Seed's produced types are the initial "available" set for grounding checks.
+        initial_produced = self._ep_produces.get(seed_ep, frozenset())
         chain = self._grow_chain(
-            seed_ep, target_length, constraints, steering, rng
+            seed_ep, target_length, constraints, steering, rng, initial_produced
         )
 
         # Step 6: hard constraint validation.
@@ -239,19 +304,21 @@ class ChainSampler:
         constraints: ChainConstraints,
         steering: dict[str, float] | None,
         rng: random.Random,
+        produced_so_far: frozenset[str] = frozenset(),
     ) -> list[str]:
         """Grow a chain from seed_ep up to target_length via CHAINS_TO.
 
-        Performs one backtrack on dead-end. When backtracking yields no alternative,
-        returns the chain as it stood before the dead-end (not the shorter backtracked
-        version) so callers see the longest partial chain available.
+        Tracks the cumulative set of semantic types produced by the chain so far
+        and only extends to candidates whose required CHAIN_ONLY params are all
+        satisfied by that set.  Performs one backtrack on dead-end.
         """
         chain: list[str] = [seed_ep]
         visited: set[str] = {seed_ep} if not constraints.allow_repeats else set()
+        produced: frozenset[str] = produced_so_far
 
         while len(chain) < target_length:
             current = chain[-1]
-            candidates = self._next_candidates(current, visited, constraints, steering)
+            candidates = self._next_candidates(current, visited, constraints, steering, produced)
 
             if candidates:
                 chosen = self._weighted_choice(
@@ -261,6 +328,7 @@ class ChainSampler:
                 chain.append(chosen)
                 if not constraints.allow_repeats:
                     visited.add(chosen)
+                produced = produced | self._ep_produces.get(chosen, frozenset())
             else:
                 # Dead-end. Try one backtrack.
                 if len(chain) <= 1:
@@ -270,13 +338,16 @@ class ChainSampler:
                 dead_ep = chain.pop()
                 if not constraints.allow_repeats:
                     visited.discard(dead_ep)
+                # Recompute produced set for the backtracked chain.
+                produced = frozenset().union(
+                    *(self._ep_produces.get(ep, frozenset()) for ep in chain)
+                )
 
                 # Find alternatives at the backtracked position, excluding dead_ep.
-                alt_candidates = self._next_candidates(chain[-1], visited, constraints, steering)
+                alt_candidates = self._next_candidates(chain[-1], visited, constraints, steering, produced)
                 alt_candidates = [c for c in alt_candidates if c != dead_ep]
 
                 if alt_candidates:
-                    # Found an alternative — pick it and continue.
                     chosen = self._weighted_choice(
                         alt_candidates, steering, rng,
                         must_include=constraints.must_include_endpoints,
@@ -284,6 +355,7 @@ class ChainSampler:
                     chain.append(chosen)
                     if not constraints.allow_repeats:
                         visited.add(chosen)
+                    produced = produced | self._ep_produces.get(chosen, frozenset())
                 else:
                     # Backtrack found nothing — return the best partial chain we had.
                     return best_so_far
@@ -296,18 +368,30 @@ class ChainSampler:
         visited: set[str],
         constraints: ChainConstraints,
         steering: dict[str, float] | None,
+        produced_so_far: frozenset[str] = frozenset(),
     ) -> list[str]:
-        """Return sorted list of valid CHAINS_TO successors from current."""
+        """Return sorted list of valid CHAINS_TO successors from current.
+
+        Only returns endpoints whose required CHAIN_ONLY params are ALL present
+        in produced_so_far — prevents the sampler from building unsatisfiable chains.
+        """
         successors: set[str] = set()
         for _, target, data in self._graph.out_edges(current, data=True):
             if data.get("edge_type") == "CHAINS_TO":
                 successors.add(target)
         if not constraints.allow_repeats:
             successors -= visited
-        # Filter to non-terminal endpoints only (terminal nodes have no out-edges anyway,
-        # but be explicit for clarity).
+        # Filter to non-terminal endpoints only.
         successors = {s for s in successors if s in self._ep_attrs}
-        return sorted(successors)  # sorted = deterministic tie-break
+        # Filter out endpoints whose required CHAIN_ONLY params are not yet satisfied.
+        satisfiable: set[str] = {
+            s for s in successors
+            if all(
+                t in produced_so_far
+                for t in self._ep_attrs[s].get("required_chain_only_types", [])
+            )
+        }
+        return sorted(satisfiable)  # sorted = deterministic tie-break
 
     def _weighted_choice(
         self,

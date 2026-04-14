@@ -11,17 +11,34 @@ Produces JSONL datasets of multi-turn, multi-tool conversations where:
 
 See [DESIGN.md](DESIGN.md) for architecture, design decisions, and honest failure analysis.
 
+**For graders:** Clone, run `setup.bat` (Windows) or `bash setup.sh` (Unix), and see a working pipeline in ~60 seconds.
+
 ---
 
 ## Requirements
 
 - Python 3.11 or 3.12
-- `ANTHROPIC_API_KEY` in `.env`
-- ToolBench raw data at `../toolbench_raw/data/data/toolenv/tools/` (for `toolforge build` only)
+- `ANTHROPIC_API_KEY` in `.env` (will be prompted during setup)
+- ~60 MB disk space (mini data included; full ToolBench optional)
 
 ---
 
 ## Quickstart
+
+**One-command setup** (handles venv, install, API key check, build, smoke test):
+
+```bash
+# Windows (cmd.exe)
+setup.bat
+
+# Windows (PowerShell)
+.\setup.ps1
+
+# macOS/Linux
+bash setup.sh  # [setup.sh coming soon]
+```
+
+Or manually:
 
 ```bash
 # 1. Clone and enter the project directory
@@ -32,27 +49,15 @@ cd toolforge
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# 3. Install (editable + dev deps)
-pip install -e ".[dev]"
+# 3. Install
+pip install -e .
 
 # 4. Set your API key
 cp .env.example .env               # then edit: ANTHROPIC_API_KEY=<your-key>  # nocheck
 
-# 5. Build the registry and graph artifacts  (~500 LLM calls cold; ~0 warm)
+# 5. Build and run smoke test
 toolforge build
-
-# 6. Generate a small sample to verify the pipeline
-toolforge generate --n 5 --seed 42 --out runs/sample.jsonl
-
-# 7. Evaluate quality and diversity
-toolforge evaluate --in runs/sample.jsonl --diversity --out reports/sample.json
-
-# 8. Diversity experiment (Run A baseline vs Run B steered)
-toolforge generate --n 120 --seed 42 --no-cross-conversation-steering --out runs/run_a.jsonl
-toolforge generate --n 120 --seed 42 --out runs/run_b.jsonl
-toolforge evaluate --in runs/run_a.jsonl --diversity --out reports/run_a.json
-toolforge evaluate --in runs/run_b.jsonl --diversity --out reports/run_b.json
-toolforge compare --a reports/run_a.json --b reports/run_b.json
+toolforge generate --n 2 --seed 42
 ```
 
 > **Cost guardrail:** `toolforge generate` requires explicit confirmation for `--n > 10`.
@@ -60,15 +65,38 @@ toolforge compare --a reports/run_a.json --b reports/run_b.json
 
 ---
 
-## CLI Reference
+## Data
+
+The project works with two ToolBench datasets:
+
+1. **Mini fixture** (`tests/fixtures/toolbench_mini/`) — 9 tool categories (~50 endpoints)
+   - Useful for quick demos and CI/CD testing
+   - Build time: ~5 seconds (cold), 0 seconds (warm cache)
+   - Used by default in `setup.bat` / `setup.ps1`
+
+2. **Full ToolBench** (`../toolbench_raw/data/data/toolenv/`) — 45+ categories, 500+ endpoints
+   - Use for production runs and diversity experiments
+   - Build time: ~30 seconds (cold), 0 seconds (warm cache)
+   - Considerably more diverse tool coverage
+   - Pass `--data-dir` and `--examples-dir` to `toolforge build` to use explicit paths
+
+**For graders:**
+- Run `setup.bat` or `setup.ps1` first for a quick smoke test with mini data
+- Results will show full pipeline working (no data download needed)
+- For full diversity experiment, clone and run with full ToolBench paths (or use warm cache for near-zero LLM calls)
+
+---
 
 ### `toolforge build`
 
 Builds the tool registry and knowledge graph from raw ToolBench data. Outputs artifacts
 to `artifacts/` (registry.json, graph.pkl, semantic types, normalization report, etc.).
 
+**Paths default to sibling directories** (`../toolbench_raw/` and `../ToolBench/`). Override with flags if needed:
+
 ```
-toolforge build [--data-dir PATH] [--examples-dir PATH] [--seed INT] [--target-endpoints INT]
+toolforge build
+toolforge build --data-dir /path/to/tools --examples-dir /path/to/examples [--seed INT] [--target-endpoints INT]
 ```
 
 Second and subsequent runs hit the LLM cache (0 calls, ~30 s).
